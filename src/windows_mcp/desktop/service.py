@@ -784,7 +784,7 @@ class Desktop:
             raise ValueError("duration must be between 0 and 10 seconds")
         return effective_duration
 
-    def _assert_foreground_target(
+    def assert_foreground_target(
         self,
         expected_window_title: str | None = None,
         expected_process: str | None = None,
@@ -839,7 +839,7 @@ class Desktop:
             x, y = loc[0], loc[1]
         else:
             x, y = loc
-        foreground = self._assert_foreground_target(expected_window_title, expected_process)
+        foreground = self.assert_foreground_target(expected_window_title, expected_process)
         effective_duration = self._normalize_drag_duration(duration)
         sleep(0.5)
         if from_loc is None:
