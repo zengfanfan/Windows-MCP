@@ -23,11 +23,13 @@ class FakeDesktop:
         self.desktop_state = object()
         self.move_calls: list[list[int]] = []
         self.drag_calls: list[dict[str, object]] = []
+        self.guard_calls: list[dict[str, object]] = []
 
     def move(self, loc: list[int]) -> None:
         self.move_calls.append(loc)
 
     def assert_foreground_target(self, **kwargs: object) -> None:
+        self.guard_calls.append(kwargs)
         return None
 
     def drag(self, loc: list[int], **kwargs: object) -> dict[str, object]:
@@ -78,6 +80,7 @@ def test_move_tool_accepts_explicit_drag_start_list() -> None:
             "expected_process": "notepad.exe",
         }
     ]
+    assert desktop.guard_calls == []
 
 
 def test_move_tool_accepts_explicit_drag_start_json_string() -> None:

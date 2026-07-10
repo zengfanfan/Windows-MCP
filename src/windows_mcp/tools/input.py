@@ -431,7 +431,6 @@ def register(
         if has_drag_only_options and not drag:
             raise ValueError("from_loc and duration require drag=True")
         x, y = loc[0], loc[1]
-        _assert_input_target(desktop, expected_window_title, expected_process)
         if drag:
             result = desktop.drag(
                 loc,
@@ -449,6 +448,7 @@ def register(
                 f"over {effective_duration:.3f} seconds."
             )
         else:
+            _assert_input_target(desktop, expected_window_title, expected_process)
             desktop.move(loc)
             return f"Moved the mouse pointer to ({x},{y})."
 
