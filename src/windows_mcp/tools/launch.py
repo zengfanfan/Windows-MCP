@@ -51,6 +51,32 @@ def _process_executable(pid: int) -> str | None:
         return None
 
 
+def _validate_window_wait_options(
+    *,
+    get_desktop,
+    wait_for_window: bool,
+    window_title_match: str,
+    window_process_strategy: str,
+    wait_timeout: float,
+    wait_interval: float,
+):
+    if not wait_for_window:
+        return None
+    if window_title_match not in {"exact", "contains"}:
+        raise ValueError('window_title_match must be "exact" or "contains"')
+    if window_process_strategy not in {"launched", "any_matching_process"}:
+        raise ValueError('window_process_strategy must be "launched" or "any_matching_process"')
+    if wait_timeout <= 0 or wait_timeout > 120:
+        raise ValueError("wait_timeout must be greater than 0 and at most 120 seconds")
+    if wait_interval <= 0 or wait_interval > 5:
+        raise ValueError("wait_interval must be greater than 0 and at most 5 seconds")
+
+    desktop = get_desktop()
+    if desktop is None:
+        raise ValueError("wait_for_window requires an initialized desktop service")
+    return desktop
+
+
 def register(mcp, *, get_desktop, get_analytics):
     @mcp.tool(
         name="LaunchExecutable",
@@ -84,6 +110,15 @@ def register(mcp, *, get_desktop, get_analytics):
         resolved_executable = _resolve_executable(executable)
         resolved_cwd = _resolve_cwd(cwd)
         resolved_args = _as_args(args)
+        wait_for_window = _as_bool(wait_for_window)
+        desktop = _validate_window_wait_options(
+            get_desktop=get_desktop,
+            wait_for_window=wait_for_window,
+            window_title_match=window_title_match,
+            window_process_strategy=window_process_strategy,
+            wait_timeout=wait_timeout,
+            wait_interval=wait_interval,
+        )
 
         process = subprocess.Popen(
             [str(resolved_executable), *resolved_args],
@@ -96,24 +131,9 @@ def register(mcp, *, get_desktop, get_analytics):
         )
         launched_process_id = process.pid
         actual_executable = _process_executable(launched_process_id)
-        wait_for_window = _as_bool(wait_for_window)
 
         window = None
         if wait_for_window:
-            if window_title_match not in {"exact", "contains"}:
-                raise ValueError('window_title_match must be "exact" or "contains"')
-            if window_process_strategy not in {"launched", "any_matching_process"}:
-                raise ValueError(
-                    'window_process_strategy must be "launched" or "any_matching_process"'
-                )
-            if wait_timeout <= 0 or wait_timeout > 120:
-                raise ValueError("wait_timeout must be greater than 0 and at most 120 seconds")
-            if wait_interval <= 0 or wait_interval > 5:
-                raise ValueError("wait_interval must be greater than 0 and at most 5 seconds")
-
-            desktop = get_desktop()
-            if desktop is None:
-                raise ValueError("wait_for_window requires an initialized desktop service")
             deadline = time.monotonic() + wait_timeout
             process_id = (
                 expected_window_process_id

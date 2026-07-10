@@ -166,3 +166,57 @@ def test_launch_executable_can_wait_for_verified_window(
             "handle": None,
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"window_title_match": "prefix"}, "window_title_match"),
+        ({"window_process_strategy": "children"}, "window_process_strategy"),
+        ({"wait_timeout": 0}, "wait_timeout"),
+        ({"wait_interval": 0}, "wait_interval"),
+    ],
+)
+def test_launch_executable_rejects_invalid_wait_options_before_popen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    exe = tmp_path / "app.exe"
+    exe.write_text("", encoding="utf-8")
+
+    def fail_popen(*args: object, **popen_kwargs: object) -> None:
+        raise AssertionError("Popen should not be called for invalid wait options")
+
+    monkeypatch.setattr(launch.subprocess, "Popen", fail_popen)
+
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(
+            _tools(object())["LaunchExecutable"](
+                executable=str(exe),
+                wait_for_window=True,
+                **kwargs,
+            )
+        )
+
+
+def test_launch_executable_requires_desktop_before_popen_when_waiting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exe = tmp_path / "app.exe"
+    exe.write_text("", encoding="utf-8")
+
+    def fail_popen(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Popen should not be called without desktop service")
+
+    monkeypatch.setattr(launch.subprocess, "Popen", fail_popen)
+
+    with pytest.raises(ValueError, match="initialized desktop"):
+        asyncio.run(
+            _tools(None)["LaunchExecutable"](
+                executable=str(exe),
+                wait_for_window=True,
+            )
+        )
