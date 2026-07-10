@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 
 from windows_mcp.desktop import service
@@ -16,20 +14,31 @@ def test_desktop_drag_uses_explicit_start_duration_and_guards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[int, int, int, int, int, float | None]] = []
+    events: list[str] = []
     desktop = _desktop()
 
-    monkeypatch.setattr(service, "sleep", lambda seconds: None)
+    monkeypatch.setattr(service, "sleep", lambda seconds: events.append(f"sleep:{seconds}"))
     monkeypatch.setattr(
         desktop,
-        "get_foreground_window",
-        lambda: SimpleNamespace(Name="Untitled - Notepad", ProcessId=123),
+        "get_foreground_window_identity",
+        lambda: (
+            events.append("guard")
+            or {
+                "handle": 100,
+                "title": "Untitled - Notepad",
+                "process": "notepad.exe",
+                "process_id": 123,
+                "outer": {"left": 0, "top": 0, "width": 100, "height": 100},
+                "client": {"left": 0, "top": 0, "width": 100, "height": 100},
+            }
+        ),
     )
-    monkeypatch.setattr(service, "Process", lambda pid: SimpleNamespace(name=lambda: "notepad.exe"))
     monkeypatch.setattr(
         service.uia,
         "DragDrop",
-        lambda x1, y1, x2, y2, moveSpeed=1, duration=None: calls.append(
-            (x1, y1, x2, y2, moveSpeed, duration)
+        lambda x1, y1, x2, y2, moveSpeed=1, duration=None: (
+            events.append("drag"),
+            calls.append((x1, y1, x2, y2, moveSpeed, duration)),
         ),
     )
 
@@ -42,13 +51,17 @@ def test_desktop_drag_uses_explicit_start_duration_and_guards(
     )
 
     assert calls == [(10, 20, 100, 200, 1, 0.25)]
+    assert events == ["sleep:0.5", "guard", "drag"]
     assert result["start"] == [10, 20]
     assert result["end"] == [100, 200]
     assert result["duration"] == 0.25
     assert result["foreground"] == {
+        "handle": 100,
         "title": "Untitled - Notepad",
         "process": "notepad.exe",
         "process_id": 123,
+        "outer": {"left": 0, "top": 0, "width": 100, "height": 100},
+        "client": {"left": 0, "top": 0, "width": 100, "height": 100},
     }
 
 
@@ -79,8 +92,15 @@ def test_desktop_drag_fails_before_press_on_title_mismatch(
     monkeypatch.setattr(service, "sleep", lambda seconds: None)
     monkeypatch.setattr(
         desktop,
-        "get_foreground_window",
-        lambda: SimpleNamespace(Name="Calculator", ProcessId=123),
+        "get_foreground_window_identity",
+        lambda: {
+            "handle": 100,
+            "title": "Calculator",
+            "process": "calc.exe",
+            "process_id": 123,
+            "outer": {"left": 0, "top": 0, "width": 100, "height": 100},
+            "client": {"left": 0, "top": 0, "width": 100, "height": 100},
+        },
     )
     monkeypatch.setattr(
         service.uia,
@@ -100,10 +120,16 @@ def test_desktop_drag_fails_before_press_on_process_mismatch(
     monkeypatch.setattr(service, "sleep", lambda seconds: None)
     monkeypatch.setattr(
         desktop,
-        "get_foreground_window",
-        lambda: SimpleNamespace(Name="Untitled - Notepad", ProcessId=123),
+        "get_foreground_window_identity",
+        lambda: {
+            "handle": 100,
+            "title": "Untitled - Notepad",
+            "process": "notepad.exe",
+            "process_id": 123,
+            "outer": {"left": 0, "top": 0, "width": 100, "height": 100},
+            "client": {"left": 0, "top": 0, "width": 100, "height": 100},
+        },
     )
-    monkeypatch.setattr(service, "Process", lambda pid: SimpleNamespace(name=lambda: "notepad.exe"))
     monkeypatch.setattr(
         service.uia,
         "DragDrop",

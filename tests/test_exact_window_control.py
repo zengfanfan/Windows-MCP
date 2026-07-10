@@ -43,16 +43,24 @@ def _window(title: str, handle: int = 100, process_id: int = 200) -> Window:
 
 def _patch_window_api(monkeypatch: pytest.MonkeyPatch, *, foreground: int = 100) -> list[tuple]:
     moves: list[tuple] = []
+    outer_rect = {"value": (10, 20, 210, 170)}
+    client_rect = {"value": (0, 0, 180, 120)}
+    client_origin = {"value": (20, 50)}
     monkeypatch.setattr(service.win32gui, "IsWindow", lambda handle: handle == 100)
-    monkeypatch.setattr(service.win32gui, "GetWindowRect", lambda handle: (10, 20, 210, 170))
-    monkeypatch.setattr(service.win32gui, "GetClientRect", lambda handle: (0, 0, 180, 120))
-    monkeypatch.setattr(service.win32gui, "ClientToScreen", lambda handle, point: (20, 50))
-    monkeypatch.setattr(service.win32gui, "GetForegroundWindow", lambda: foreground)
+    monkeypatch.setattr(service.win32gui, "GetWindowRect", lambda handle: outer_rect["value"])
+    monkeypatch.setattr(service.win32gui, "GetClientRect", lambda handle: client_rect["value"])
     monkeypatch.setattr(
-        service.win32gui,
-        "MoveWindow",
-        lambda *args: moves.append(args),
+        service.win32gui, "ClientToScreen", lambda handle, point: client_origin["value"]
     )
+    monkeypatch.setattr(service.win32gui, "GetForegroundWindow", lambda: foreground)
+
+    def move_window(handle: int, x: int, y: int, width: int, height: int, repaint: bool) -> None:
+        moves.append((handle, x, y, width, height, repaint))
+        outer_rect["value"] = (x, y, x + width, y + height)
+        client_origin["value"] = (x + 10, y + 30)
+        client_rect["value"] = (0, 0, width - 20, height - 30)
+
+    monkeypatch.setattr(service.win32gui, "MoveWindow", move_window)
     monkeypatch.setattr(
         service, "Process", lambda pid: type("P", (), {"name": lambda self: "app.exe"})()
     )
@@ -73,6 +81,7 @@ def test_find_exact_windows_filters_by_process_and_title(
             "handle": 100,
             "process_id": 200,
             "process": "app.exe",
+            "process_path": None,
             "title": "Target App",
             "status": "Normal",
             "outer": {

@@ -197,10 +197,16 @@ def build_snapshot_response(
     if desktop_state.screenshot_coordinate_mapping:
         mapping = json.dumps(desktop_state.screenshot_coordinate_mapping, sort_keys=True)
         metadata_text += f"Screenshot Coordinate Mapping: {mapping}\n"
+    if desktop_state.screenshot_target_window:
+        target = json.dumps(desktop_state.screenshot_target_window, sort_keys=True)
+        metadata_text += f"Screenshot Target Window: {target}\n"
+    if desktop_state.screenshot_display_inventory:
+        displays = json.dumps(desktop_state.screenshot_display_inventory, sort_keys=True)
+        metadata_text += f"Screenshot Display Inventory: {displays}\n"
     if ui_detail_note:
         metadata_text += f"{ui_detail_note}\n"
 
-    response_text = dedent(f'''
+    response_text = dedent(f"""
     {metadata_text}
     Active Desktop:
     {active_desktop}
@@ -213,12 +219,12 @@ def build_snapshot_response(
 
     Opened Windows:
     {windows}
-    ''')
+    """)
     if include_ui_details:
-        response_text += dedent(f'''
+        response_text += dedent(f"""
 
     UI Tree:
-    {semantic_tree or "No elements found."}''')
+    {semantic_tree or "No elements found."}""")
 
     response = [response_text]
     if screenshot_bytes:

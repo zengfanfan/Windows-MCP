@@ -25,19 +25,26 @@ class FakeDesktop:
         self.guard_calls: list[dict[str, str | None]] = []
         self.action_calls: list[tuple[str, object]] = []
 
-    def assert_foreground_target(
-        self,
-        expected_window_title: str | None = None,
-        expected_process: str | None = None,
-    ) -> None:
+    def assert_foreground_target(self, **kwargs: object) -> dict[str, object]:
         self.guard_calls.append(
             {
-                "expected_window_title": expected_window_title,
-                "expected_process": expected_process,
+                "expected_window_title": kwargs.get("expected_window_title"),
+                "expected_process": kwargs.get("expected_process"),
+                "expected_window_handle": kwargs.get("expected_window_handle"),
+                "expected_process_id": kwargs.get("expected_process_id"),
+                "expected_title_match": kwargs.get("expected_title_match"),
+                "expected_outer_bounds": kwargs.get("expected_outer_bounds"),
+                "expected_client_bounds": kwargs.get("expected_client_bounds"),
             }
         )
         if self.fail_guard:
             raise ValueError("foreground target mismatch")
+        return {
+            "handle": 100,
+            "process_id": 200,
+            "process": "notepad.exe",
+            "title": "Notepad",
+        }
 
     def click(self, **kwargs: object) -> None:
         self.action_calls.append(("click", kwargs))
@@ -103,9 +110,43 @@ def test_guarded_input_tools_assert_target_before_input(
         {
             "expected_window_title": "Notepad",
             "expected_process": "notepad.exe",
+            "expected_window_handle": None,
+            "expected_process_id": None,
+            "expected_title_match": "contains",
+            "expected_outer_bounds": None,
+            "expected_client_bounds": None,
         }
     ]
     assert desktop.action_calls[0][0] == expected_action
+
+
+def test_guarded_input_tools_accept_exact_identity_fields() -> None:
+    desktop = FakeDesktop()
+
+    result = asyncio.run(
+        _tools(desktop)["Click"](
+            loc=[10, 20],
+            expected_window_handle="100",
+            expected_process_id="200",
+            expected_window_title="Notepad",
+            expected_title_match="exact",
+            expected_outer_bounds="[0, 0, 300, 200]",
+            expected_client_bounds=[5, 35, 290, 160],
+        )
+    )
+
+    assert "Target validated:" in result
+    assert desktop.guard_calls == [
+        {
+            "expected_window_title": "Notepad",
+            "expected_process": None,
+            "expected_window_handle": 100,
+            "expected_process_id": 200,
+            "expected_title_match": "exact",
+            "expected_outer_bounds": [0, 0, 300, 200],
+            "expected_client_bounds": [5, 35, 290, 160],
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -132,6 +173,11 @@ def test_guarded_input_tools_fail_before_input_on_mismatch(
         {
             "expected_window_title": None,
             "expected_process": "notepad.exe",
+            "expected_window_handle": None,
+            "expected_process_id": None,
+            "expected_title_match": "contains",
+            "expected_outer_bounds": None,
+            "expected_client_bounds": None,
         }
     ]
     assert desktop.action_calls == []

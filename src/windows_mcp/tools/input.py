@@ -244,12 +244,48 @@ def _assert_input_target(
     desktop: Any,
     expected_window_title: str | None,
     expected_process: str | None,
-) -> None:
-    if expected_window_title is not None or expected_process is not None:
-        desktop.assert_foreground_target(
+    expected_window_handle: int | str | None = None,
+    expected_process_id: int | str | None = None,
+    expected_title_match: Literal["exact", "contains"] = "contains",
+    expected_outer_bounds: list[int] | str | None = None,
+    expected_client_bounds: list[int] | str | None = None,
+) -> dict[str, object] | None:
+    expected_window_handle = _as_optional_int(expected_window_handle)
+    expected_process_id = _as_optional_int(expected_process_id)
+    expected_outer_bounds = _as_bounds(expected_outer_bounds)
+    expected_client_bounds = _as_bounds(expected_client_bounds)
+    if any(
+        [
+            expected_window_title is not None,
+            expected_process is not None,
+            expected_window_handle is not None,
+            expected_process_id is not None,
+            expected_outer_bounds is not None,
+            expected_client_bounds is not None,
+        ]
+    ):
+        return desktop.assert_foreground_target(
             expected_window_title=expected_window_title,
             expected_process=expected_process,
+            expected_window_handle=expected_window_handle,
+            expected_process_id=expected_process_id,
+            expected_title_match=expected_title_match,
+            expected_outer_bounds=expected_outer_bounds,
+            expected_client_bounds=expected_client_bounds,
         )
+    return None
+
+
+def _guard_suffix(guard: dict[str, object] | None) -> str:
+    if guard is None:
+        return ""
+    return (
+        " Target validated: "
+        f"handle={guard.get('handle')} "
+        f"pid={guard.get('process_id')} "
+        f"process={guard.get('process')!r} "
+        f"title={guard.get('title')!r}."
+    )
 
 
 def register(
@@ -282,6 +318,11 @@ def register(
         clicks: int = 1,
         expected_window_title: str | None = None,
         expected_process: str | None = None,
+        expected_window_handle: int | str | None = None,
+        expected_process_id: int | str | None = None,
+        expected_title_match: Literal["exact", "contains"] = "contains",
+        expected_outer_bounds: list[int] | str | None = None,
+        expected_client_bounds: list[int] | str | None = None,
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
@@ -293,10 +334,19 @@ def register(
         if len(loc) != 2:
             raise ValueError("Location must be a list of exactly 2 integers [x, y]")
         x, y = loc[0], loc[1]
-        _assert_input_target(desktop, expected_window_title, expected_process)
+        guard = _assert_input_target(
+            desktop,
+            expected_window_title,
+            expected_process,
+            expected_window_handle,
+            expected_process_id,
+            expected_title_match,
+            expected_outer_bounds,
+            expected_client_bounds,
+        )
         desktop.click(loc=loc, button=button, clicks=clicks)
         num_clicks = {0: "Hover", 1: "Single", 2: "Double"}
-        return f"{num_clicks.get(clicks)} {button} clicked at ({x},{y})."
+        return f"{num_clicks.get(clicks)} {button} clicked at ({x},{y}).{_guard_suffix(guard)}"
 
     @mcp.tool(
         name="Type",
@@ -319,6 +369,11 @@ def register(
         press_enter: bool | str = False,
         expected_window_title: str | None = None,
         expected_process: str | None = None,
+        expected_window_handle: int | str | None = None,
+        expected_process_id: int | str | None = None,
+        expected_title_match: Literal["exact", "contains"] = "contains",
+        expected_outer_bounds: list[int] | str | None = None,
+        expected_client_bounds: list[int] | str | None = None,
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
@@ -330,7 +385,16 @@ def register(
         if len(loc) != 2:
             raise ValueError("Location must be a list of exactly 2 integers [x, y]")
         x, y = loc[0], loc[1]
-        _assert_input_target(desktop, expected_window_title, expected_process)
+        guard = _assert_input_target(
+            desktop,
+            expected_window_title,
+            expected_process,
+            expected_window_handle,
+            expected_process_id,
+            expected_title_match,
+            expected_outer_bounds,
+            expected_client_bounds,
+        )
         desktop.type(
             loc=loc,
             text=text,
@@ -338,7 +402,7 @@ def register(
             clear=clear,
             press_enter=press_enter,
         )
-        return f"Typed {text} at ({x},{y})."
+        return f"Typed {text} at ({x},{y}).{_guard_suffix(guard)}"
 
     @mcp.tool(
         name="Scroll",
@@ -360,6 +424,11 @@ def register(
         wheel_times: int = 1,
         expected_window_title: str | None = None,
         expected_process: str | None = None,
+        expected_window_handle: int | str | None = None,
+        expected_process_id: int | str | None = None,
+        expected_title_match: Literal["exact", "contains"] = "contains",
+        expected_outer_bounds: list[int] | str | None = None,
+        expected_client_bounds: list[int] | str | None = None,
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
@@ -368,16 +437,26 @@ def register(
             loc = _resolve_label(desktop, label)
         if loc and len(loc) != 2:
             raise ValueError("Location must be a list of exactly 2 integers [x, y]")
-        _assert_input_target(desktop, expected_window_title, expected_process)
+        guard = _assert_input_target(
+            desktop,
+            expected_window_title,
+            expected_process,
+            expected_window_handle,
+            expected_process_id,
+            expected_title_match,
+            expected_outer_bounds,
+            expected_client_bounds,
+        )
         response = desktop.scroll(loc, type, direction, wheel_times)
         if response:
-            return response
-        return (
+            return response + _guard_suffix(guard)
+        result = (
             f"Scrolled {type} {direction} by {wheel_times} wheel times"
             + f" at ({loc[0]},{loc[1]})."
             if loc
             else ""
         )
+        return result + _guard_suffix(guard)
 
     @mcp.tool(
         name="Move",
@@ -407,6 +486,11 @@ def register(
         duration: float | int | str | None = None,
         expected_window_title: str | None = None,
         expected_process: str | None = None,
+        expected_window_handle: int | str | None = None,
+        expected_process_id: int | str | None = None,
+        expected_title_match: Literal["exact", "contains"] = "contains",
+        expected_outer_bounds: list[int] | str | None = None,
+        expected_client_bounds: list[int] | str | None = None,
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
@@ -438,19 +522,34 @@ def register(
                 duration=duration,
                 expected_window_title=expected_window_title,
                 expected_process=expected_process,
+                expected_window_handle=_as_optional_int(expected_window_handle),
+                expected_process_id=_as_optional_int(expected_process_id),
+                expected_title_match=expected_title_match,
+                expected_outer_bounds=_as_bounds(expected_outer_bounds),
+                expected_client_bounds=_as_bounds(expected_client_bounds),
             )
             start_x, start_y = result["start"]
             effective_duration = result["duration"]
+            guard = result.get("foreground")
             if effective_duration is None:
-                return f"Dragged from ({start_x},{start_y}) to ({x},{y})."
+                return f"Dragged from ({start_x},{start_y}) to ({x},{y}).{_guard_suffix(guard)}"
             return (
                 f"Dragged from ({start_x},{start_y}) to ({x},{y}) "
-                f"over {effective_duration:.3f} seconds."
+                f"over {effective_duration:.3f} seconds.{_guard_suffix(guard)}"
             )
         else:
-            _assert_input_target(desktop, expected_window_title, expected_process)
+            guard = _assert_input_target(
+                desktop,
+                expected_window_title,
+                expected_process,
+                expected_window_handle,
+                expected_process_id,
+                expected_title_match,
+                expected_outer_bounds,
+                expected_client_bounds,
+            )
             desktop.move(loc)
-            return f"Moved the mouse pointer to ({x},{y})."
+            return f"Moved the mouse pointer to ({x},{y}).{_guard_suffix(guard)}"
 
     @mcp.tool(
         name="Shortcut",
@@ -468,12 +567,26 @@ def register(
         shortcut: str,
         expected_window_title: str | None = None,
         expected_process: str | None = None,
+        expected_window_handle: int | str | None = None,
+        expected_process_id: int | str | None = None,
+        expected_title_match: Literal["exact", "contains"] = "contains",
+        expected_outer_bounds: list[int] | str | None = None,
+        expected_client_bounds: list[int] | str | None = None,
         ctx: Context = None,
     ):
         desktop = get_desktop()
-        _assert_input_target(desktop, expected_window_title, expected_process)
+        guard = _assert_input_target(
+            desktop,
+            expected_window_title,
+            expected_process,
+            expected_window_handle,
+            expected_process_id,
+            expected_title_match,
+            expected_outer_bounds,
+            expected_client_bounds,
+        )
         desktop.shortcut(shortcut)
-        return f"Pressed {shortcut}."
+        return f"Pressed {shortcut}.{_guard_suffix(guard)}"
 
     @mcp.tool(
         name="Wait",
@@ -546,8 +659,12 @@ def register(
         if normalized in {"foreground_window", "window_bounds_stable", "window_disappeared"}:
             if stable_duration < 0 or stable_duration > timeout:
                 raise ValueError("stable_duration must be non-negative and no greater than timeout")
-            if not any([handle is not None, process_id is not None, process, title, window_name, text]):
-                raise ValueError("exact window conditions require handle, process_id, process, or title")
+            if not any(
+                [handle is not None, process_id is not None, process, title, window_name, text]
+            ):
+                raise ValueError(
+                    "exact window conditions require handle, process_id, process, or title"
+                )
             if title is None:
                 title = window_name or text
         started_at = time.monotonic()
@@ -580,18 +697,12 @@ def register(
                 elif len(matches) != 1:
                     last_detail = f"expected one matching window, found {len(matches)}"
                 elif normalized == "foreground_window":
-                    desktop_state = desktop.get_state(
-                        use_vision=False,
-                        use_dom=False,
-                        use_ui_tree=True,
-                        use_annotation=False,
-                    )
-                    active_window = getattr(desktop_state, "active_window", None)
-                    active_handle = getattr(active_window, "handle", None)
+                    foreground = desktop.get_foreground_window_identity()
+                    active_handle = foreground.get("handle") if foreground else None
                     target = matches[0]
                     matched = active_handle == target.get("handle")
                     last_detail = (
-                        f"foreground matched {_format_window_identity(target)}"
+                        f"foreground matched {_format_window_identity(foreground)}"
                         if matched
                         else f"foreground handle was {active_handle}; target was "
                         f"{_format_window_identity(target)}"

@@ -686,6 +686,7 @@ class DisplayInfo:
     work_rect: "Rect | None" = None
     effective_dpi: int | None = None
     scale: float | None = None
+    orientation: str | None = None
 
 
 class _MonitorInfoExW(ctypes.Structure):
@@ -815,6 +816,7 @@ def GetDisplays() -> List[DisplayInfo]:
                 work_rect=work_rect,
                 effective_dpi=effective_dpi,
                 scale=scale,
+                orientation="landscape" if rect.width() >= rect.height() else "portrait",
             )
         )
         return 1

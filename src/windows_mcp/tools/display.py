@@ -48,6 +48,7 @@ def register(mcp, *, get_desktop, get_analytics):
                     "work_rect": _rect_to_dict(getattr(display, "work_rect", None)),
                     "effective_dpi": getattr(display, "effective_dpi", None),
                     "scale": getattr(display, "scale", None),
+                    "orientation": getattr(display, "orientation", None),
                 }
                 for display in displays
             ],

@@ -293,6 +293,12 @@ class Desktop:
             )
             if use_vision and screenshot_original_size is not None
             else None,
+            screenshot_target_window=self.get_foreground_window_identity() if use_vision else None,
+            screenshot_display_inventory=[
+                self._display_inventory_item(display) for display in displays
+            ]
+            if use_vision
+            else None,
             capture_sec=time() - start_time,
         )
         if profile_enabled:
@@ -664,6 +670,12 @@ class Desktop:
         except Exception:
             return None
 
+    def _window_process_path(self, process_id: int) -> str | None:
+        try:
+            return Process(process_id).exe()
+        except Exception:
+            return None
+
     def _client_bounds(self, handle: int) -> dict[str, int]:
         left, top, right, bottom = win32gui.GetClientRect(handle)
         screen_left, screen_top = win32gui.ClientToScreen(handle, (left, top))
@@ -690,15 +702,86 @@ class Desktop:
         }
 
     def _window_identity(self, window: Window) -> dict[str, object]:
-        handle = window.handle
+        return self._window_identity_from_handle(
+            window.handle,
+            title=window.name,
+            status=window.status.value,
+            process_id=window.process_id,
+        )
+
+    def _window_identity_from_handle(
+        self,
+        handle: int,
+        *,
+        title: str | None = None,
+        status: str | None = None,
+        process_id: int | None = None,
+    ) -> dict[str, object]:
+        if process_id is None:
+            _, process_id = win32process.GetWindowThreadProcessId(handle)
+        if title is None:
+            title = win32gui.GetWindowText(handle)
+        if status is None:
+            if uia.IsIconic(handle):
+                status = Status.MINIMIZED.value
+            elif uia.IsZoomed(handle):
+                status = Status.MAXIMIZED.value
+            elif uia.IsWindowVisible(handle):
+                status = Status.NORMAL.value
+            else:
+                status = Status.HIDDEN.value
         return {
             "handle": handle,
-            "process_id": window.process_id,
-            "process": self._window_process_name(window.process_id),
-            "title": window.name,
-            "status": window.status.value,
+            "process_id": process_id,
+            "process": self._window_process_name(process_id),
+            "process_path": self._window_process_path(process_id),
+            "title": title,
+            "status": status,
             "outer": self._outer_bounds(handle),
             "client": self._client_bounds(handle),
+        }
+
+    def get_foreground_window_identity(self) -> dict[str, object] | None:
+        handle = win32gui.GetForegroundWindow()
+        if not handle or not win32gui.IsWindow(handle):
+            return None
+        return self._window_identity_from_handle(handle)
+
+    @staticmethod
+    def _bounds_match_with_tolerance(
+        actual: dict[str, int],
+        expected: list[int],
+        *,
+        tolerance: int = 1,
+    ) -> bool:
+        keys = ("left", "top", "width", "height")
+        return all(
+            abs(actual[key] - int(expected[index])) <= tolerance for index, key in enumerate(keys)
+        )
+
+    @staticmethod
+    def _display_inventory_item(display: uia.DisplayInfo) -> dict[str, object]:
+        def rect_to_dict(rect: uia.Rect | None) -> dict[str, int] | None:
+            if rect is None:
+                return None
+            return {
+                "left": rect.left,
+                "top": rect.top,
+                "right": rect.right,
+                "bottom": rect.bottom,
+                "width": rect.width(),
+                "height": rect.height(),
+            }
+
+        return {
+            "index": display.index,
+            "device_name": display.device_name,
+            "primary": display.primary,
+            "rect": rect_to_dict(display.rect),
+            "work_rect": rect_to_dict(getattr(display, "work_rect", None)),
+            "effective_dpi": getattr(display, "effective_dpi", None),
+            "scale": getattr(display, "scale", None),
+            "orientation": getattr(display, "orientation", None),
         }
 
     def find_exact_windows(
@@ -795,16 +878,90 @@ class Desktop:
         if outer is not None:
             x, y, width, height = outer
         else:
-            current_outer = self._outer_bounds(handle)
-            current_client = self._client_bounds(handle)
-            client_x, client_y, client_width, client_height = client
-            x = client_x - (current_client["left"] - current_outer["left"])
-            y = client_y - (current_client["top"] - current_outer["top"])
-            width = client_width + (current_outer["width"] - current_client["width"])
-            height = client_height + (current_outer["height"] - current_client["height"])
+            x, y, width, height = self._outer_bounds_for_client(handle, client)
 
         win32gui.MoveWindow(handle, int(x), int(y), int(width), int(height), True)
-        return self._require_exact_window(handle, process_id, process, title, title_match)
+        moved = self._wait_for_exact_window_bounds(
+            handle=handle,
+            process_id=process_id,
+            process=process,
+            title=title,
+            title_match=title_match,
+            outer=outer,
+            client=client,
+        )
+        return moved
+
+    def _outer_bounds_for_client(self, handle: int, client: list[int]) -> tuple[int, int, int, int]:
+        client_x, client_y, client_width, client_height = [int(value) for value in client]
+        try:
+            style = win32gui.GetWindowLong(handle, win32con.GWL_STYLE)
+            ex_style = win32gui.GetWindowLong(handle, win32con.GWL_EXSTYLE)
+            rect = ctypes.wintypes.RECT(0, 0, client_width, client_height)
+            dpi = ctypes.windll.user32.GetDpiForWindow(handle)
+            adjust_for_dpi = getattr(ctypes.windll.user32, "AdjustWindowRectExForDpi", None)
+            if adjust_for_dpi is not None:
+                ok = adjust_for_dpi(
+                    ctypes.byref(rect),
+                    style,
+                    False,
+                    ex_style,
+                    dpi,
+                )
+            else:
+                ok = ctypes.windll.user32.AdjustWindowRectEx(
+                    ctypes.byref(rect),
+                    style,
+                    False,
+                    ex_style,
+                )
+            if not ok:
+                raise OSError("AdjustWindowRectEx failed")
+            border_left = -rect.left
+            border_top = -rect.top
+            outer_width = rect.right - rect.left
+            outer_height = rect.bottom - rect.top
+            return client_x - border_left, client_y - border_top, outer_width, outer_height
+        except Exception:
+            current_outer = self._outer_bounds(handle)
+            current_client = self._client_bounds(handle)
+            return (
+                client_x - (current_client["left"] - current_outer["left"]),
+                client_y - (current_client["top"] - current_outer["top"]),
+                client_width + (current_outer["width"] - current_client["width"]),
+                client_height + (current_outer["height"] - current_client["height"]),
+            )
+
+    def _wait_for_exact_window_bounds(
+        self,
+        *,
+        handle: int,
+        process_id: int | None,
+        process: str | None,
+        title: str | None,
+        title_match: Literal["exact", "contains"],
+        outer: list[int] | None,
+        client: list[int] | None,
+        timeout: float = 2.0,
+    ) -> dict[str, object]:
+        deadline = time() + timeout
+        last_identity = self._require_exact_window(handle, process_id, process, title, title_match)
+        while True:
+            target = outer or client
+            bounds_type = "outer" if outer is not None else "client"
+            if target is None or self._bounds_match_with_tolerance(
+                last_identity[bounds_type], target
+            ):
+                return last_identity
+            if time() >= deadline:
+                raise ValueError(
+                    f"Window {bounds_type} bounds did not reach requested target: "
+                    f"expected {target}, actual {last_identity[bounds_type]}"
+                )
+            sleep(0.05)
+            last_identity = self._require_exact_window(
+                handle, process_id, process, title, title_match
+            )
 
     def get_coordinates_from_label(self, label: int) -> tuple[int, int]:
         tree_state = self.desktop_state.tree_state
@@ -977,30 +1134,60 @@ class Desktop:
         self,
         expected_window_title: str | None = None,
         expected_process: str | None = None,
+        expected_window_handle: int | None = None,
+        expected_process_id: int | None = None,
+        expected_title_match: Literal["exact", "contains"] = "contains",
+        expected_outer_bounds: list[int] | None = None,
+        expected_client_bounds: list[int] | None = None,
     ) -> dict[str, object] | None:
-        if expected_window_title is None and expected_process is None:
+        if not any(
+            [
+                expected_window_title is not None,
+                expected_process is not None,
+                expected_window_handle is not None,
+                expected_process_id is not None,
+                expected_outer_bounds is not None,
+                expected_client_bounds is not None,
+            ]
+        ):
             return None
 
-        active_window = self.get_foreground_window()
-        if active_window is None:
+        if expected_title_match not in {"exact", "contains"}:
+            raise ValueError('expected_title_match must be "exact" or "contains"')
+
+        actual = self.get_foreground_window_identity()
+        if actual is None:
             raise ValueError("No foreground window is available for target validation")
 
-        title = active_window.Name or ""
-        process_name = ""
-        if expected_process is not None:
-            try:
-                process_name = Process(active_window.ProcessId).name()
-            except Exception as exc:
-                raise ValueError("Failed to resolve foreground process name") from exc
+        title = str(actual.get("title") or "")
+        process_name = str(actual.get("process") or "")
 
-        if (
-            expected_window_title is not None
-            and expected_window_title.casefold() not in title.casefold()
-        ):
+        if expected_window_handle is not None and actual.get("handle") != expected_window_handle:
             raise ValueError(
-                "Foreground window title did not match expected_window_title: "
-                f"expected substring {expected_window_title!r}, actual {title!r}"
+                "Foreground window handle did not match expected_window_handle: "
+                f"expected {expected_window_handle!r}, actual {actual.get('handle')!r}"
             )
+
+        if expected_process_id is not None and actual.get("process_id") != expected_process_id:
+            raise ValueError(
+                "Foreground process id did not match expected_process_id: "
+                f"expected {expected_process_id!r}, actual {actual.get('process_id')!r}"
+            )
+
+        if expected_window_title is not None:
+            expected_title = expected_window_title.casefold()
+            actual_title = title.casefold()
+            title_matches = (
+                actual_title == expected_title
+                if expected_title_match == "exact"
+                else expected_title in actual_title
+            )
+            if not title_matches:
+                mode = "exact" if expected_title_match == "exact" else "substring"
+                raise ValueError(
+                    "Foreground window title did not match expected_window_title: "
+                    f"expected {mode} {expected_window_title!r}, actual {title!r}"
+                )
 
         if expected_process is not None:
             expected_basename = os.path.basename(expected_process).casefold()
@@ -1010,11 +1197,23 @@ class Desktop:
                     f"expected {expected_basename!r}, actual {process_name!r}"
                 )
 
-        return {
-            "title": title,
-            "process": process_name or None,
-            "process_id": active_window.ProcessId,
-        }
+        if expected_outer_bounds is not None and not self._bounds_match_with_tolerance(
+            actual["outer"], expected_outer_bounds
+        ):
+            raise ValueError(
+                "Foreground outer bounds did not match expected_outer_bounds: "
+                f"expected {expected_outer_bounds!r}, actual {actual['outer']!r}"
+            )
+
+        if expected_client_bounds is not None and not self._bounds_match_with_tolerance(
+            actual["client"], expected_client_bounds
+        ):
+            raise ValueError(
+                "Foreground client bounds did not match expected_client_bounds: "
+                f"expected {expected_client_bounds!r}, actual {actual['client']!r}"
+            )
+
+        return actual
 
     def drag(
         self,
@@ -1023,12 +1222,16 @@ class Desktop:
         duration: float | int | str | None = None,
         expected_window_title: str | None = None,
         expected_process: str | None = None,
+        expected_window_handle: int | None = None,
+        expected_process_id: int | None = None,
+        expected_title_match: Literal["exact", "contains"] = "contains",
+        expected_outer_bounds: list[int] | None = None,
+        expected_client_bounds: list[int] | None = None,
     ) -> dict[str, object]:
         if isinstance(loc, list):
             x, y = loc[0], loc[1]
         else:
             x, y = loc
-        foreground = self.assert_foreground_target(expected_window_title, expected_process)
         effective_duration = self._normalize_drag_duration(duration)
         sleep(0.5)
         if from_loc is None:
@@ -1037,6 +1240,15 @@ class Desktop:
             cx, cy = from_loc[0], from_loc[1]
         else:
             cx, cy = from_loc
+        foreground = self.assert_foreground_target(
+            expected_window_title=expected_window_title,
+            expected_process=expected_process,
+            expected_window_handle=expected_window_handle,
+            expected_process_id=expected_process_id,
+            expected_title_match=expected_title_match,
+            expected_outer_bounds=expected_outer_bounds,
+            expected_client_bounds=expected_client_bounds,
+        )
         uia.DragDrop(cx, cy, x, y, moveSpeed=1, duration=effective_duration)
         return {
             "start": [cx, cy],

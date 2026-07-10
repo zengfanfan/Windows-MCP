@@ -29,6 +29,7 @@ class FakeDesktop:
                 work_rect=Rect(0, 0, 1920, 1040),
                 effective_dpi=144,
                 scale=1.5,
+                orientation="landscape",
             )
         ]
 
@@ -63,6 +64,7 @@ def test_display_inventory_returns_display_dpi_metadata() -> None:
                 },
                 "effective_dpi": 144,
                 "scale": 1.5,
+                "orientation": "landscape",
             }
         ],
         "count": 1,

@@ -33,6 +33,7 @@ class FakeDesktop:
         self.desktop_state: DesktopState | None = None
         self.calls: list[dict[str, object]] = []
         self.find_calls: list[dict[str, object]] = []
+        self.foreground_identity: dict[str, object] | None = None
 
     def get_state(self, **kwargs: object) -> DesktopState:
         self.calls.append(kwargs)
@@ -47,6 +48,9 @@ class FakeDesktop:
         if self.exact_windows:
             return self.exact_windows.pop(0)
         return []
+
+    def get_foreground_window_identity(self) -> dict[str, object] | None:
+        return self.foreground_identity
 
 
 def _box() -> BoundingBox:
@@ -227,6 +231,12 @@ def test_wait_for_foreground_window_matches_exact_handle() -> None:
             ]
         ],
     )
+    desktop.foreground_identity = {
+        "handle": 123,
+        "process_id": 456,
+        "process": "target.exe",
+        "title": "Target",
+    }
     tools = _register_tools(desktop)
 
     result = asyncio.run(

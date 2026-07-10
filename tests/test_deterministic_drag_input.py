@@ -78,6 +78,11 @@ def test_move_tool_accepts_explicit_drag_start_list() -> None:
             "duration": 0.25,
             "expected_window_title": "Notepad",
             "expected_process": "notepad.exe",
+            "expected_window_handle": None,
+            "expected_process_id": None,
+            "expected_title_match": "contains",
+            "expected_outer_bounds": None,
+            "expected_client_bounds": None,
         }
     ]
     assert desktop.guard_calls == []
