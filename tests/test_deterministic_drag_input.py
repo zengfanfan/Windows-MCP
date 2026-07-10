@@ -27,6 +27,9 @@ class FakeDesktop:
     def move(self, loc: list[int]) -> None:
         self.move_calls.append(loc)
 
+    def assert_foreground_target(self, **kwargs: object) -> None:
+        return None
+
     def drag(self, loc: list[int], **kwargs: object) -> dict[str, object]:
         self.drag_calls.append({"loc": loc, **kwargs})
         return {
