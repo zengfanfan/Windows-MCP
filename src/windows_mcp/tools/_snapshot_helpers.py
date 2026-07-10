@@ -5,6 +5,7 @@ by the Snapshot and Screenshot tool modules.
 """
 
 import io
+import json
 import logging
 import os
 import time
@@ -162,6 +163,10 @@ def build_snapshot_response(
         )
 
     metadata_text = f"Cursor Position: {desktop_state.cursor_position}\n"
+    if desktop_state.screenshot_observation_id:
+        metadata_text += f"Screenshot Observation ID: {desktop_state.screenshot_observation_id}\n"
+    if desktop_state.screenshot_captured_at_utc:
+        metadata_text += f"Screenshot Captured At UTC: {desktop_state.screenshot_captured_at_utc}\n"
     if desktop_state.screenshot_original_size:
         orig = desktop_state.screenshot_original_size
         scale = desktop_state.screenshot_scale or 1.0
@@ -189,6 +194,9 @@ def build_snapshot_response(
         metadata_text += "Coordinate Space: Virtual desktop coordinates\n"
     if desktop_state.screenshot_backend:
         metadata_text += f"Screenshot Backend: {desktop_state.screenshot_backend}\n"
+    if desktop_state.screenshot_coordinate_mapping:
+        mapping = json.dumps(desktop_state.screenshot_coordinate_mapping, sort_keys=True)
+        metadata_text += f"Screenshot Coordinate Mapping: {mapping}\n"
     if ui_detail_note:
         metadata_text += f"{ui_detail_note}\n"
 

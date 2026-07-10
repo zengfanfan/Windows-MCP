@@ -19,6 +19,7 @@ from windows_mcp.infrastructure import validate_url
 from urllib.parse import urljoin
 from locale import getpreferredencoding
 from typing import Literal
+from datetime import UTC, datetime
 from markdownify import markdownify
 from fuzzywuzzy import process
 from time import sleep, time, perf_counter
@@ -35,6 +36,7 @@ import csv
 import re
 import os
 import io
+import uuid
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -281,6 +283,16 @@ class Desktop:
             screenshot_backend=getattr(self, "_last_screenshot_backend", None)
             if use_vision
             else None,
+            screenshot_observation_id=str(uuid.uuid4()) if use_vision else None,
+            screenshot_captured_at_utc=datetime.now(UTC).isoformat() if use_vision else None,
+            screenshot_coordinate_mapping=self._screenshot_coordinate_mapping(
+                screenshot_region=screenshot_region,
+                original_size=screenshot_original_size,
+                returned_screenshot=screenshot,
+                scale=applied_scale,
+            )
+            if use_vision and screenshot_original_size is not None
+            else None,
             capture_sec=time() - start_time,
         )
         if profile_enabled:
@@ -305,6 +317,35 @@ class Desktop:
         end_time = time()
         logger.info(f"Desktop State capture took {end_time - start_time:.2f} seconds")
         return self.desktop_state
+
+    @staticmethod
+    def _screenshot_coordinate_mapping(
+        *,
+        screenshot_region: BoundingBox | None,
+        original_size: Size,
+        returned_screenshot: Image.Image | bytes,
+        scale: float | None,
+    ) -> dict[str, object]:
+        if isinstance(returned_screenshot, bytes):
+            returned_width = original_size.width
+            returned_height = original_size.height
+        else:
+            returned_width = returned_screenshot.width
+            returned_height = returned_screenshot.height
+        origin_x = screenshot_region.left if screenshot_region else 0
+        origin_y = screenshot_region.top if screenshot_region else 0
+        coordinate_scale = 1.0 / (scale or 1.0)
+        return {
+            "coordinate_space": "virtual_desktop",
+            "screen_origin": {"x": origin_x, "y": origin_y},
+            "original_size": {"width": original_size.width, "height": original_size.height},
+            "returned_size": {"width": returned_width, "height": returned_height},
+            "image_to_screen": {
+                "x": f"screen_x = {origin_x} + image_x * {coordinate_scale:.6f}",
+                "y": f"screen_y = {origin_y} + image_y * {coordinate_scale:.6f}",
+                "scale": coordinate_scale,
+            },
+        }
 
     def get_window_status(self, control: uia.Control) -> Status:
         if uia.IsIconic(control.NativeWindowHandle):

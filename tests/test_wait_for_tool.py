@@ -23,10 +23,16 @@ class FakeMCP:
 
 
 class FakeDesktop:
-    def __init__(self, states: list[DesktopState]) -> None:
+    def __init__(
+        self,
+        states: list[DesktopState],
+        exact_windows: list[list[dict[str, object]]] | None = None,
+    ) -> None:
         self.states = states
+        self.exact_windows = exact_windows or []
         self.desktop_state: DesktopState | None = None
         self.calls: list[dict[str, object]] = []
+        self.find_calls: list[dict[str, object]] = []
 
     def get_state(self, **kwargs: object) -> DesktopState:
         self.calls.append(kwargs)
@@ -35,6 +41,12 @@ class FakeDesktop:
         if self.desktop_state is None:
             raise RuntimeError("FakeDesktop has no desktop state")
         return self.desktop_state
+
+    def find_exact_windows(self, **kwargs: object) -> list[dict[str, object]]:
+        self.find_calls.append(kwargs)
+        if self.exact_windows:
+            return self.exact_windows.pop(0)
+        return []
 
 
 def _box() -> BoundingBox:
@@ -199,3 +211,76 @@ def test_wait_for_timeout_reports_last_observed_state() -> None:
                 interval=0.001,
             )
         )
+
+
+def test_wait_for_foreground_window_matches_exact_handle() -> None:
+    desktop = FakeDesktop(
+        [_state(active_window_name="Target")],
+        exact_windows=[
+            [
+                {
+                    "handle": 123,
+                    "process_id": 456,
+                    "process": "target.exe",
+                    "title": "Target",
+                }
+            ]
+        ],
+    )
+    tools = _register_tools(desktop)
+
+    result = asyncio.run(
+        tools["WaitFor"](
+            condition="foreground_window",
+            handle=123,
+            process_id=456,
+            timeout=1,
+            interval=0.001,
+        )
+    )
+
+    assert "condition 'foreground_window' satisfied" in result
+    assert desktop.find_calls[0]["handle"] == 123
+    assert desktop.find_calls[0]["process_id"] == 456
+
+
+def test_wait_for_window_bounds_stable_uses_exact_identity() -> None:
+    window = {
+        "handle": 123,
+        "process_id": 456,
+        "process": "target.exe",
+        "title": "Target",
+        "outer": {"left": 10, "top": 20, "width": 300, "height": 200},
+        "client": {"left": 12, "top": 50, "width": 296, "height": 168},
+    }
+    desktop = FakeDesktop([], exact_windows=[[window], [window]])
+    tools = _register_tools(desktop)
+
+    result = asyncio.run(
+        tools["WaitFor"](
+            condition="window_bounds_stable",
+            handle=123,
+            bounds=[10, 20, 300, 200],
+            stable_duration=0,
+            timeout=1,
+            interval=0.001,
+        )
+    )
+
+    assert "condition 'window_bounds_stable' satisfied" in result
+
+
+def test_wait_for_window_disappeared_succeeds_when_exact_match_absent() -> None:
+    desktop = FakeDesktop([], exact_windows=[[]])
+    tools = _register_tools(desktop)
+
+    result = asyncio.run(
+        tools["WaitFor"](
+            condition="window_disappeared",
+            handle=123,
+            timeout=1,
+            interval=0.001,
+        )
+    )
+
+    assert "condition 'window_disappeared' satisfied" in result

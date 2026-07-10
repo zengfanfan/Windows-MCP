@@ -76,6 +76,9 @@ class DesktopState:
     screenshot_displays: list[int] | None = None
     available_displays: list[Display] | None = None
     screenshot_backend: str | None = None
+    screenshot_observation_id: str | None = None
+    screenshot_captured_at_utc: str | None = None
+    screenshot_coordinate_mapping: dict | None = None
     tree_state: TreeState | None = None
     capture_sec: float = 0.0
 

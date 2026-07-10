@@ -16,6 +16,9 @@ WaitForCondition = Literal[
     "element_exists",
     "element_enabled",
     "focused_element",
+    "foreground_window",
+    "window_bounds_stable",
+    "window_disappeared",
 ]
 
 
@@ -42,6 +45,21 @@ def _as_loc(value: list | str | None) -> list | None:
     if value is None or isinstance(value, list):
         return value
     return json.loads(value)
+
+
+def _as_optional_int(value: int | str | None) -> int | None:
+    if value is None or isinstance(value, int):
+        return value
+    return int(value)
+
+
+def _as_bounds(value: list | str | None) -> list[int] | None:
+    bounds = _as_loc(value)
+    if bounds is None:
+        return None
+    if len(bounds) != 4:
+        raise ValueError("bounds must be [left, top, width, height]")
+    return [int(item) for item in bounds]
 
 
 def _text_matches(value: object | None, expected: str | None) -> bool:
@@ -132,6 +150,43 @@ def _matches_wait_condition(
     raise ValueError(f"Unsupported WaitFor condition: {condition}")
 
 
+def _format_window_identity(window: dict[str, object] | None) -> str:
+    if window is None:
+        return "no matching window"
+    return (
+        f"handle={window.get('handle')} pid={window.get('process_id')} "
+        f"process={window.get('process')!r} title={window.get('title')!r}"
+    )
+
+
+def _bounds_match(actual: dict[str, int], expected: list[int]) -> bool:
+    left, top, width, height = expected
+    return (
+        actual["left"] == left
+        and actual["top"] == top
+        and actual["width"] == width
+        and actual["height"] == height
+    )
+
+
+def _find_exact_wait_window(
+    desktop: Any,
+    *,
+    title: str | None,
+    title_match: Literal["exact", "contains"],
+    process: str | None,
+    process_id: int | None,
+    handle: int | None,
+) -> list[dict[str, object]]:
+    return desktop.find_exact_windows(
+        title=title,
+        title_match=title_match,
+        process=process,
+        process_id=process_id,
+        handle=handle,
+    )
+
+
 def _validate_wait_for_args(
     condition: str,
     text: str | None,
@@ -146,6 +201,9 @@ def _validate_wait_for_args(
         "element": "element_exists",
         "enabled": "element_enabled",
         "focused": "focused_element",
+        "foreground": "foreground_window",
+        "bounds_stable": "window_bounds_stable",
+        "disappeared": "window_disappeared",
     }
     normalized = aliases.get(normalized, normalized)
     valid_conditions = {
@@ -154,11 +212,15 @@ def _validate_wait_for_args(
         "element_exists",
         "element_enabled",
         "focused_element",
+        "foreground_window",
+        "window_bounds_stable",
+        "window_disappeared",
     }
     if normalized not in valid_conditions:
         raise ValueError(
             "condition must be one of: text_exists, active_window, element_exists, "
-            "element_enabled, focused_element"
+            "element_enabled, focused_element, foreground_window, "
+            "window_bounds_stable, window_disappeared"
         )
 
     if timeout <= 0 or timeout > 120:
@@ -434,8 +496,10 @@ def register(
         description=(
             "Waits until a UI condition is satisfied, polling the Windows accessibility tree "
             "inside the tool to avoid repeated Snapshot calls. Conditions: text_exists, "
-            "active_window, element_exists, element_enabled, focused_element. Provide text "
-            "and/or window_name depending on the condition. Set use_dom=True for browser DOM text."
+            "active_window, element_exists, element_enabled, focused_element, "
+            "foreground_window, window_bounds_stable, window_disappeared. Provide text "
+            "and/or window_name depending on the condition. For exact window conditions, provide "
+            "handle/process_id/process/title identity. Set use_dom=True for browser DOM text."
         ),
         annotations=ToolAnnotations(
             title="WaitFor",
@@ -453,6 +517,14 @@ def register(
         timeout: float = 10.0,
         interval: float = 0.25,
         use_dom: bool | str = False,
+        handle: int | str | None = None,
+        process_id: int | str | None = None,
+        process: str | None = None,
+        title: str | None = None,
+        title_match: Literal["exact", "contains"] = "contains",
+        bounds_type: Literal["outer", "client"] = "outer",
+        bounds: list[int] | str | None = None,
+        stable_duration: float = 0.5,
         ctx: Context = None,
     ) -> str:
         normalized = _validate_wait_for_args(
@@ -464,25 +536,95 @@ def register(
         )
         desktop = get_desktop()
         use_dom_bool = _as_bool(use_dom)
+        handle = _as_optional_int(handle)
+        process_id = _as_optional_int(process_id)
+        bounds = _as_bounds(bounds)
+        if title_match not in {"exact", "contains"}:
+            raise ValueError('title_match must be "exact" or "contains"')
+        if bounds_type not in {"outer", "client"}:
+            raise ValueError('bounds_type must be "outer" or "client"')
+        if normalized in {"foreground_window", "window_bounds_stable", "window_disappeared"}:
+            if stable_duration < 0 or stable_duration > timeout:
+                raise ValueError("stable_duration must be non-negative and no greater than timeout")
+            if not any([handle is not None, process_id is not None, process, title, window_name, text]):
+                raise ValueError("exact window conditions require handle, process_id, process, or title")
+            if title is None:
+                title = window_name or text
         started_at = time.monotonic()
         deadline = started_at + timeout
         attempts = 0
         last_detail = "condition was not evaluated"
+        stable_since: float | None = None
+        last_bounds: dict[str, int] | None = None
 
         while True:
             attempts += 1
-            desktop_state = desktop.get_state(
-                use_vision=False,
-                use_dom=use_dom_bool,
-                use_ui_tree=True,
-                use_annotation=False,
-            )
-            matched, last_detail = _matches_wait_condition(
-                desktop_state=desktop_state,
-                condition=normalized,
-                text=text,
-                window_name=window_name,
-            )
+            now = time.monotonic()
+            if normalized in {"foreground_window", "window_bounds_stable", "window_disappeared"}:
+                matches = _find_exact_wait_window(
+                    desktop,
+                    title=title,
+                    title_match=title_match,
+                    process=process,
+                    process_id=process_id,
+                    handle=handle,
+                )
+                matched = False
+                if normalized == "window_disappeared":
+                    matched = len(matches) == 0
+                    last_detail = (
+                        "window disappeared"
+                        if matched
+                        else f"window still present: {_format_window_identity(matches[0])}"
+                    )
+                elif len(matches) != 1:
+                    last_detail = f"expected one matching window, found {len(matches)}"
+                elif normalized == "foreground_window":
+                    desktop_state = desktop.get_state(
+                        use_vision=False,
+                        use_dom=False,
+                        use_ui_tree=True,
+                        use_annotation=False,
+                    )
+                    active_window = getattr(desktop_state, "active_window", None)
+                    active_handle = getattr(active_window, "handle", None)
+                    target = matches[0]
+                    matched = active_handle == target.get("handle")
+                    last_detail = (
+                        f"foreground matched {_format_window_identity(target)}"
+                        if matched
+                        else f"foreground handle was {active_handle}; target was "
+                        f"{_format_window_identity(target)}"
+                    )
+                else:
+                    target = matches[0]
+                    current_bounds = target[bounds_type]
+                    bounds_ok = bounds is None or _bounds_match(current_bounds, bounds)
+                    if not bounds_ok:
+                        stable_since = None
+                        last_bounds = current_bounds
+                        last_detail = f"{bounds_type} bounds were {current_bounds}"
+                    elif last_bounds == current_bounds:
+                        stable_since = stable_since or now
+                        matched = now - stable_since >= stable_duration
+                        last_detail = f"{bounds_type} bounds stable at {current_bounds}"
+                    else:
+                        stable_since = now
+                        last_bounds = current_bounds
+                        last_detail = f"{bounds_type} bounds observed at {current_bounds}"
+            else:
+                desktop_state = desktop.get_state(
+                    use_vision=False,
+                    use_dom=use_dom_bool,
+                    use_ui_tree=True,
+                    use_annotation=False,
+                )
+                matched, last_detail = _matches_wait_condition(
+                    desktop_state=desktop_state,
+                    condition=normalized,
+                    text=text,
+                    window_name=window_name,
+                )
             if matched:
                 elapsed = time.monotonic() - started_at
                 return (

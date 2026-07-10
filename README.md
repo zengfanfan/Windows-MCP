@@ -698,11 +698,22 @@ MCP Client can access the following tools to interact with Windows:
   foreground target does not match.
 - `Shortcut`: Press keyboard shortcuts (`Ctrl+c`, `Alt+Tab`, etc).
 - `Wait`: Pause for a defined duration.
-- `WaitFor`: Wait until text, an active window, an element, or a focused element appears by polling UI state inside one tool call.
+- `WaitFor`: Wait until text, an active window, an element, a focused element, an exact
+  foreground window, stable exact window bounds, or exact window disappearance appears by polling
+  UI state inside one tool call.
 - `Window`: Find, activate, and set outer/client bounds for exact windows without fuzzy matching.
 - `DisplayInventory`: Read display layout, work areas, effective DPI, and scale metadata.
-- `Screenshot`: Fast screenshot-first desktop capture with cursor position, active/open windows, and an image. Skips UI tree extraction for speed and should be the default first call when you mainly need visual context. Supports `display=[0]` or `display=[0,1]` using zero-based active Windows display indices. After capture, a brief orange-red glowing border is drawn inside the captured area as a visual confirmation (set `WINDOWS_MCP_DISABLE_FLASH=1` to disable).
-- `Snapshot`: Full desktop state capture for workflows that need interactive element ids, scrollable regions, or `use_dom=True` browser extraction. Supports `use_vision=True` for including screenshots and `display=[0]` or `display=[0,1]` using zero-based active Windows display indices.
+- `Screenshot`: Fast screenshot-first desktop capture with cursor position, active/open windows,
+  observation id, UTC capture time, backend, coordinate mapping metadata, and an image. Skips UI
+  tree extraction for speed and should be the default first call when you mainly need visual context.
+  Supports `display=[0]` or `display=[0,1]` using zero-based active Windows display indices. After
+  capture, a brief orange-red glowing border is drawn inside the captured area as a visual
+  confirmation (set `WINDOWS_MCP_DISABLE_FLASH=1` to disable).
+- `Snapshot`: Full desktop state capture for workflows that need interactive element ids,
+  scrollable regions, or `use_dom=True` browser extraction. Supports `use_vision=True` for including
+  screenshots with the same observation id, UTC capture time, backend, and coordinate mapping
+  metadata, and supports `display=[0]` or `display=[0,1]` using zero-based active Windows display
+  indices.
 - `App`: To launch an application from the start menu, resize or move the window and switch between apps.
 - `LaunchExecutable`: Strictly launch one executable path with separated argv and optional cwd.
 - `PowerShell`: To execute PowerShell commands.
