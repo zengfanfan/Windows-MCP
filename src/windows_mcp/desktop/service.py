@@ -18,7 +18,7 @@ from windows_mcp.desktop import flash_overlay
 from windows_mcp.infrastructure import validate_url
 from urllib.parse import urljoin
 from locale import getpreferredencoding
-from typing import Literal
+from typing import Callable, Literal
 from datetime import UTC, datetime
 from markdownify import markdownify
 from fuzzywuzzy import process
@@ -1066,31 +1066,60 @@ class Desktop:
         caret_position: Literal["start", "idle", "end"] = "idle",
         clear: bool | str = False,
         press_enter: bool | str = False,
-    ):
+        expected_window_title: str | None = None,
+        expected_process: str | None = None,
+        expected_window_handle: int | None = None,
+        expected_process_id: int | None = None,
+        expected_title_match: Literal["exact", "contains"] = "contains",
+        expected_outer_bounds: list[int] | None = None,
+        expected_client_bounds: list[int] | None = None,
+    ) -> dict[str, object] | None:
         x, y = loc
         uia.Click(x, y)
+        foreground = None
+
+        def validate_target() -> None:
+            nonlocal foreground
+            foreground = self.assert_foreground_target(
+                expected_window_title=expected_window_title,
+                expected_process=expected_process,
+                expected_window_handle=expected_window_handle,
+                expected_process_id=expected_process_id,
+                expected_title_match=expected_title_match,
+                expected_outer_bounds=expected_outer_bounds,
+                expected_client_bounds=expected_client_bounds,
+            )
+
         if caret_position == "start":
+            validate_target()
             uia.SendKeys("{Home}", waitTime=0.05)
         elif caret_position == "end":
+            validate_target()
             uia.SendKeys("{End}", waitTime=0.05)
         if clear is True or (isinstance(clear, str) and clear.lower() == "true"):
             sleep(0.5)
+            validate_target()
             uia.SendKeys("{Ctrl}a", waitTime=0.05)
+            validate_target()
             uia.SendKeys("{Back}", waitTime=0.05)
         # Per-key SendKeys for short text (so escape sequences keep working);
         # clipboard paste for long text (so the scan-code queue can't race).
         has_control_chars = any(c in text for c in ("\n", "\t", "{", "}"))
         if len(text) >= self._LONG_TEXT_PASTE_THRESHOLD and not has_control_chars:
-            self._paste_text(text)
+            validate_target()
+            self._paste_text(text, before_paste=validate_target)
         else:
             escaped_text = _escape_text_for_sendkeys(text)
             # Bump interval from 0.02 → 0.04. Keeps short-text speed acceptable
             # while reducing key-loss on slower systems.
+            validate_target()
             uia.SendKeys(escaped_text, interval=0.04, waitTime=0.05)
         if press_enter is True or (isinstance(press_enter, str) and press_enter.lower() == "true"):
+            validate_target()
             uia.SendKeys("{Enter}", waitTime=0.05)
+        return foreground
 
-    def _paste_text(self, text: str):
+    def _paste_text(self, text: str, *, before_paste: Callable[[], None] | None = None):
         """Stash text on the clipboard, Ctrl+V, restore prior clipboard.
         Plain-text only — control chars (newlines, tabs, braces) need to
         route through SendKeys instead so escape sequences are honored.
@@ -1100,17 +1129,21 @@ class Desktop:
             prior = uia.GetClipboardText()
         except Exception:
             pass
-        uia.SetClipboardText(text)
-        # Tiny pause so the OS clipboard write settles before Ctrl+V reads.
-        sleep(0.05)
-        uia.SendKeys("{Ctrl}v", waitTime=0.05)
-        # Restore prior clipboard so we don't surprise other tools.
-        if prior is not None:
+        try:
+            uia.SetClipboardText(text)
+            # Tiny pause so the OS clipboard write settles before Ctrl+V reads.
             sleep(0.05)
-            try:
-                uia.SetClipboardText(prior)
-            except Exception:
-                pass
+            if before_paste is not None:
+                before_paste()
+            uia.SendKeys("{Ctrl}v", waitTime=0.05)
+        finally:
+            # Restore prior clipboard so guard failures do not leak staged text.
+            if prior is not None:
+                sleep(0.05)
+                try:
+                    uia.SetClipboardText(prior)
+                except Exception:
+                    pass
 
     def scroll(
         self,

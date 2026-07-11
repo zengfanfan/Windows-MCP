@@ -395,13 +395,21 @@ def register(
             expected_outer_bounds,
             expected_client_bounds,
         )
-        desktop.type(
+        post_click_guard = desktop.type(
             loc=loc,
             text=text,
             caret_position=caret_position,
             clear=clear,
             press_enter=press_enter,
+            expected_window_title=expected_window_title,
+            expected_process=expected_process,
+            expected_window_handle=_as_optional_int(expected_window_handle),
+            expected_process_id=_as_optional_int(expected_process_id),
+            expected_title_match=expected_title_match,
+            expected_outer_bounds=_as_bounds(expected_outer_bounds),
+            expected_client_bounds=_as_bounds(expected_client_bounds),
         )
+        guard = post_click_guard or guard
         return f"Typed {text} at ({x},{y}).{_guard_suffix(guard)}"
 
     @mcp.tool(
