@@ -8,14 +8,31 @@ from mcp.types import ToolAnnotations
 from windows_mcp.infrastructure import with_analytics
 
 
+def _as_strict_int(value: object) -> int:
+    if isinstance(value, bool):
+        raise ValueError("Bounds must contain integers, not booleans")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped and stripped.lstrip("+-").isdigit():
+            return int(stripped)
+    raise ValueError("Bounds must contain exactly 4 integers")
+
+
 def _as_bounds(value: list[int] | str | None) -> list[int] | None:
     if value is None or isinstance(value, list):
         bounds = value
     else:
         bounds = json.loads(value)
-    if bounds is not None and len(bounds) != 4:
+    if bounds is None:
+        return None
+    if not isinstance(bounds, list) or len(bounds) != 4:
         raise ValueError("Bounds must be a list of exactly 4 integers [x, y, width, height]")
-    return bounds
+    parsed = [_as_strict_int(item) for item in bounds]
+    if parsed[2] <= 0 or parsed[3] <= 0:
+        raise ValueError("Bounds width and height must be greater than zero")
+    return parsed
 
 
 def register(mcp, *, get_desktop, get_analytics):

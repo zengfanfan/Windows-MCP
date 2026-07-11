@@ -1,6 +1,8 @@
 import asyncio
+import ctypes
 import json
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import pytest
 
@@ -141,6 +143,45 @@ def test_set_exact_client_bounds_converts_to_outer_bounds(
     assert moves == [(100, 20, 40, 320, 230, True)]
 
 
+def test_client_bounds_adjustment_accounts_for_native_menu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    desktop = _desktop()
+    menu_flags: list[bool] = []
+
+    monkeypatch.setattr(service.win32gui, "GetWindowLong", lambda *args: 0)
+    monkeypatch.setattr(service.win32gui, "GetMenu", lambda handle: 1)
+
+    def adjust_window_rect(
+        rect_pointer: object,
+        style: int,
+        has_menu: bool,
+        ex_style: int,
+        dpi: int,
+    ) -> int:
+        menu_flags.append(bool(has_menu))
+        rect = ctypes.cast(
+            rect_pointer,
+            ctypes.POINTER(ctypes.wintypes.RECT),
+        ).contents
+        rect.left = -10
+        rect.top = -40
+        rect.right = 310
+        rect.bottom = 230
+        return 1
+
+    user32 = SimpleNamespace(
+        GetDpiForWindow=lambda handle: 144,
+        AdjustWindowRectExForDpi=adjust_window_rect,
+    )
+    monkeypatch.setattr(service.ctypes.windll, "user32", user32)
+
+    result = desktop._outer_bounds_for_client(100, [30, 70, 300, 190])
+
+    assert result == (20, 30, 320, 270)
+    assert menu_flags == [True]
+
+
 def test_window_tool_find_returns_json(monkeypatch: pytest.MonkeyPatch) -> None:
     desktop = _desktop()
     monkeypatch.setattr(
@@ -162,3 +203,15 @@ def test_window_tool_bounds_requires_handle() -> None:
 
     with pytest.raises(ValueError, match="handle is required"):
         asyncio.run(mcp.tools["Window"](mode="bounds", outer=[0, 0, 100, 100]))
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    [[0, 0, 0, 100], [0, 0, 100, -1], [0, 0, 100.5, 100], "not-a-list"],
+)
+def test_window_tool_rejects_invalid_bounds(bounds: object) -> None:
+    mcp = FakeMCP()
+    window_tool_module.register(mcp, get_desktop=_desktop, get_analytics=lambda: None)
+
+    with pytest.raises((ValueError, json.JSONDecodeError)):
+        asyncio.run(mcp.tools["Window"](mode="bounds", handle=100, outer=bounds))

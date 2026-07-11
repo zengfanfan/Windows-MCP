@@ -22,7 +22,7 @@ from typing import Callable, Literal
 from datetime import UTC, datetime
 from markdownify import markdownify
 from fuzzywuzzy import process
-from time import sleep, time, perf_counter
+from time import monotonic, perf_counter, sleep, time
 from psutil import Process
 import math
 import win32process
@@ -881,14 +881,14 @@ class Desktop:
         title: str | None = None,
         title_match: Literal["exact", "contains"] = "contains",
     ) -> dict[str, object]:
-        window = self._require_exact_window(handle, process_id, process, title, title_match)
+        self._require_exact_window(handle, process_id, process, title, title_match)
         self.bring_window_to_top(handle)
         foreground_handle = win32gui.GetForegroundWindow()
         if foreground_handle != handle:
             raise ValueError(
                 f"Failed to activate exact window: foreground handle is {foreground_handle}"
             )
-        return window
+        return self._require_exact_window(handle, process_id, process, title, title_match)
 
     def set_exact_window_bounds(
         self,
@@ -929,13 +929,14 @@ class Desktop:
             style = win32gui.GetWindowLong(handle, win32con.GWL_STYLE)
             ex_style = win32gui.GetWindowLong(handle, win32con.GWL_EXSTYLE)
             rect = ctypes.wintypes.RECT(0, 0, client_width, client_height)
+            has_menu = bool(win32gui.GetMenu(handle))
             dpi = ctypes.windll.user32.GetDpiForWindow(handle)
             adjust_for_dpi = getattr(ctypes.windll.user32, "AdjustWindowRectExForDpi", None)
             if adjust_for_dpi is not None:
                 ok = adjust_for_dpi(
                     ctypes.byref(rect),
                     style,
-                    False,
+                    has_menu,
                     ex_style,
                     dpi,
                 )
@@ -943,7 +944,7 @@ class Desktop:
                 ok = ctypes.windll.user32.AdjustWindowRectEx(
                     ctypes.byref(rect),
                     style,
-                    False,
+                    has_menu,
                     ex_style,
                 )
             if not ok:
@@ -975,7 +976,7 @@ class Desktop:
         client: list[int] | None,
         timeout: float = 2.0,
     ) -> dict[str, object]:
-        deadline = time() + timeout
+        deadline = monotonic() + timeout
         last_identity = self._require_exact_window(handle, process_id, process, title, title_match)
         while True:
             target = outer or client
@@ -984,7 +985,7 @@ class Desktop:
                 last_identity[bounds_type], target
             ):
                 return last_identity
-            if time() >= deadline:
+            if monotonic() >= deadline:
                 raise ValueError(
                     f"Window {bounds_type} bounds did not reach requested target: "
                     f"expected {target}, actual {last_identity[bounds_type]}"
