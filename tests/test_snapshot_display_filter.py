@@ -491,6 +491,15 @@ class TestDisplayFiltering:
         desktop.get_active_window = MagicMock(return_value=active_window)
         desktop.get_cursor_location = MagicMock(return_value=(250, 180))
         desktop.get_screenshot = MagicMock(return_value=Image.new("RGB", (800, 600), "white"))
+        foreground = {
+            "handle": 1,
+            "process_id": 11,
+            "process": "browser.exe",
+            "title": "Browser",
+        }
+        desktop.get_foreground_window_identity = MagicMock(
+            side_effect=[foreground, dict(foreground)]
+        )
 
         with patch(
             "windows_mcp.desktop.service.get_current_desktop", return_value={"name": "Desktop 1"}
@@ -509,6 +518,9 @@ class TestDisplayFiltering:
         assert state.tree_state.interactive_nodes == []
         assert state.tree_state.scrollable_nodes == []
         assert state.screenshot_original_size.to_string() == "(800,600)"
+        assert state.screenshot_foreground_window_before == foreground
+        assert state.screenshot_foreground_window_after == foreground
+        assert state.screenshot_foreground_window_stable is True
 
     def test_get_state_rejects_dom_without_ui_tree(self, desktop):
         desktop.tree = MagicMock()

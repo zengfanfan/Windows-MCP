@@ -197,9 +197,20 @@ def build_snapshot_response(
     if desktop_state.screenshot_coordinate_mapping:
         mapping = json.dumps(desktop_state.screenshot_coordinate_mapping, sort_keys=True)
         metadata_text += f"Screenshot Coordinate Mapping: {mapping}\n"
-    if desktop_state.screenshot_target_window:
-        target = json.dumps(desktop_state.screenshot_target_window, sort_keys=True)
-        metadata_text += f"Screenshot Target Window: {target}\n"
+    if desktop_state.screenshot_foreground_window_before:
+        foreground_before = json.dumps(
+            desktop_state.screenshot_foreground_window_before, sort_keys=True
+        )
+        metadata_text += f"Screenshot Foreground Window Before: {foreground_before}\n"
+    if desktop_state.screenshot_foreground_window_after:
+        foreground_after = json.dumps(
+            desktop_state.screenshot_foreground_window_after, sort_keys=True
+        )
+        metadata_text += f"Screenshot Foreground Window After: {foreground_after}\n"
+    if desktop_state.screenshot_observation_id:
+        stable_value = desktop_state.screenshot_foreground_window_stable
+        stable = "unknown" if stable_value is None else str(stable_value).lower()
+        metadata_text += f"Screenshot Foreground Window Stable: {stable}\n"
     if desktop_state.screenshot_display_inventory:
         displays = json.dumps(desktop_state.screenshot_display_inventory, sort_keys=True)
         metadata_text += f"Screenshot Display Inventory: {displays}\n"

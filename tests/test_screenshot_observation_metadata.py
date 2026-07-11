@@ -25,7 +25,7 @@ def test_snapshot_response_includes_observation_metadata() -> None:
             "returned_size": {"width": 200, "height": 150},
             "image_to_screen": {"scale": 2.0},
         },
-        screenshot_target_window={
+        screenshot_foreground_window_before={
             "handle": 100,
             "process_id": 200,
             "process": "app.exe",
@@ -34,6 +34,16 @@ def test_snapshot_response_includes_observation_metadata() -> None:
             "outer": {"left": 1, "top": 2, "width": 300, "height": 200},
             "client": {"left": 9, "top": 40, "width": 284, "height": 153},
         },
+        screenshot_foreground_window_after={
+            "handle": 100,
+            "process_id": 200,
+            "process": "app.exe",
+            "process_path": "C:\\Tools\\app.exe",
+            "title": "Target",
+            "outer": {"left": 1, "top": 2, "width": 300, "height": 200},
+            "client": {"left": 9, "top": 40, "width": 284, "height": 153},
+        },
+        screenshot_foreground_window_stable=True,
         screenshot_display_inventory=[
             {
                 "index": 0,
@@ -67,7 +77,38 @@ def test_snapshot_response_includes_observation_metadata() -> None:
     assert "Screenshot Backend: pillow" in text
     assert "Screenshot Coordinate Mapping:" in text
     assert '"screen_origin": {"x": 100, "y": 200}' in text
-    assert "Screenshot Target Window:" in text
+    assert "Screenshot Foreground Window Before:" in text
+    assert "Screenshot Foreground Window After:" in text
+    assert "Screenshot Foreground Window Stable: true" in text
     assert '"process_path": "C:\\\\Tools\\\\app.exe"' in text
     assert "Screenshot Display Inventory:" in text
     assert '"effective_dpi": 144' in text
+
+
+def test_snapshot_response_marks_foreground_stability_unknown_without_identity() -> None:
+    state = DesktopState(
+        active_desktop={"name": "Desktop 1"},
+        all_desktops=[],
+        active_window=None,
+        windows=[],
+        screenshot_observation_id="obs-unknown",
+        screenshot_foreground_window_stable=None,
+        tree_state=TreeState(),
+    )
+
+    response = build_snapshot_response(
+        {
+            "desktop_state": state,
+            "interactive_elements": "",
+            "scrollable_elements": "",
+            "semantic_tree": "",
+            "windows": "",
+            "active_window": "",
+            "active_desktop": "",
+            "all_desktops": "",
+            "screenshot_bytes": None,
+        },
+        include_ui_details=False,
+    )
+
+    assert "Screenshot Foreground Window Stable: unknown" in response[0]

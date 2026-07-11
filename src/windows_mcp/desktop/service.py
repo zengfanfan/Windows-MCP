@@ -217,7 +217,13 @@ class Desktop:
 
         screenshot_original_size = None
         applied_scale = None
+        screenshot_captured_at_utc = None
+        screenshot_foreground_window_before = None
+        screenshot_foreground_window_after = None
+        screenshot_foreground_window_stable = None
         if use_vision:
+            screenshot_foreground_window_before = self._safe_foreground_window_identity()
+            screenshot_captured_at_utc = datetime.now(UTC).isoformat()
             if use_annotation:
                 nodes = tree_state.interactive_nodes
                 screenshot = self.get_annotated_screenshot(
@@ -228,6 +234,11 @@ class Desktop:
                 )
             else:
                 screenshot = self.get_screenshot(capture_rect=capture_rect)
+            screenshot_foreground_window_after = self._safe_foreground_window_identity()
+            screenshot_foreground_window_stable = self._same_window_instance(
+                screenshot_foreground_window_before,
+                screenshot_foreground_window_after,
+            )
 
             screenshot_original_size = Size(width=screenshot.width, height=screenshot.height)
 
@@ -284,7 +295,7 @@ class Desktop:
             if use_vision
             else None,
             screenshot_observation_id=str(uuid.uuid4()) if use_vision else None,
-            screenshot_captured_at_utc=datetime.now(UTC).isoformat() if use_vision else None,
+            screenshot_captured_at_utc=screenshot_captured_at_utc,
             screenshot_coordinate_mapping=self._screenshot_coordinate_mapping(
                 screenshot_region=screenshot_region,
                 original_size=screenshot_original_size,
@@ -293,7 +304,9 @@ class Desktop:
             )
             if use_vision and screenshot_original_size is not None
             else None,
-            screenshot_target_window=self.get_foreground_window_identity() if use_vision else None,
+            screenshot_foreground_window_before=screenshot_foreground_window_before,
+            screenshot_foreground_window_after=screenshot_foreground_window_after,
+            screenshot_foreground_window_stable=screenshot_foreground_window_stable,
             screenshot_display_inventory=[
                 self._display_inventory_item(display) for display in displays
             ]
@@ -746,6 +759,24 @@ class Desktop:
         if not handle or not win32gui.IsWindow(handle):
             return None
         return self._window_identity_from_handle(handle)
+
+    def _safe_foreground_window_identity(self) -> dict[str, object] | None:
+        try:
+            return self.get_foreground_window_identity()
+        except Exception as exc:
+            logger.debug("Unable to read foreground window identity: %s", exc)
+            return None
+
+    @staticmethod
+    def _same_window_instance(
+        before: dict[str, object] | None,
+        after: dict[str, object] | None,
+    ) -> bool | None:
+        if before is None or after is None:
+            return None
+        return before.get("handle") == after.get("handle") and before.get(
+            "process_id"
+        ) == after.get("process_id")
 
     @staticmethod
     def _bounds_match_with_tolerance(

@@ -79,7 +79,9 @@ class DesktopState:
     screenshot_observation_id: str | None = None
     screenshot_captured_at_utc: str | None = None
     screenshot_coordinate_mapping: dict | None = None
-    screenshot_target_window: dict | None = None
+    screenshot_foreground_window_before: dict | None = None
+    screenshot_foreground_window_after: dict | None = None
+    screenshot_foreground_window_stable: bool | None = None
     screenshot_display_inventory: list[dict] | None = None
     tree_state: TreeState | None = None
     capture_sec: float = 0.0
