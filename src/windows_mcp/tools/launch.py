@@ -1,6 +1,7 @@
 """LaunchExecutable tool - strict non-shell executable launch."""
 
 import json
+import math
 import subprocess
 import time
 from pathlib import Path
@@ -26,6 +27,30 @@ def _as_args(value: list[str] | str | None) -> list[str]:
 
 def _as_bool(value: bool | str) -> bool:
     return value is True or (isinstance(value, str) and value.lower() == "true")
+
+
+def _as_finite_float(value: float | int | str, name: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be a finite number")
+    return parsed
+
+
+def _as_optional_positive_int(value: int | str | None, name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if parsed <= 0 or (isinstance(value, float) and not value.is_integer()):
+        raise ValueError(f"{name} must be a positive integer")
+    return parsed
 
 
 def _resolve_executable(executable: str) -> Path:
@@ -57,6 +82,9 @@ def _validate_window_wait_options(
     wait_for_window: bool,
     window_title_match: str,
     window_process_strategy: str,
+    expected_window_title: str | None,
+    expected_window_process: str | None,
+    expected_window_process_id: int | None,
     wait_timeout: float,
     wait_interval: float,
 ):
@@ -66,6 +94,18 @@ def _validate_window_wait_options(
         raise ValueError('window_title_match must be "exact" or "contains"')
     if window_process_strategy not in {"launched", "any_matching_process"}:
         raise ValueError('window_process_strategy must be "launched" or "any_matching_process"')
+    if window_process_strategy == "launched" and expected_window_process_id is not None:
+        raise ValueError(
+            "expected_window_process_id cannot override the launched process id; "
+            'use window_process_strategy="any_matching_process" instead'
+        )
+    if window_process_strategy == "any_matching_process" and not any(
+        [expected_window_title, expected_window_process, expected_window_process_id is not None]
+    ):
+        raise ValueError(
+            "any_matching_process requires expected_window_title, expected_window_process, "
+            "or expected_window_process_id"
+        )
     if wait_timeout <= 0 or wait_timeout > 120:
         raise ValueError("wait_timeout must be greater than 0 and at most 120 seconds")
     if wait_interval <= 0 or wait_interval > 5:
@@ -111,11 +151,21 @@ def register(mcp, *, get_desktop, get_analytics):
         resolved_cwd = _resolve_cwd(cwd)
         resolved_args = _as_args(args)
         wait_for_window = _as_bool(wait_for_window)
+        if wait_for_window:
+            wait_timeout = _as_finite_float(wait_timeout, "wait_timeout")
+            wait_interval = _as_finite_float(wait_interval, "wait_interval")
+            expected_window_process_id = _as_optional_positive_int(
+                expected_window_process_id,
+                "expected_window_process_id",
+            )
         desktop = _validate_window_wait_options(
             get_desktop=get_desktop,
             wait_for_window=wait_for_window,
             window_title_match=window_title_match,
             window_process_strategy=window_process_strategy,
+            expected_window_title=expected_window_title,
+            expected_window_process=expected_window_process,
+            expected_window_process_id=expected_window_process_id,
             wait_timeout=wait_timeout,
             wait_interval=wait_interval,
         )
@@ -136,11 +186,9 @@ def register(mcp, *, get_desktop, get_analytics):
         if wait_for_window:
             deadline = time.monotonic() + wait_timeout
             process_id = (
-                expected_window_process_id
-                if expected_window_process_id is not None
-                else launched_process_id
+                launched_process_id
                 if window_process_strategy == "launched"
-                else None
+                else expected_window_process_id
             )
             last_count = 0
             while True:
@@ -157,11 +205,13 @@ def register(mcp, *, get_desktop, get_analytics):
                     break
                 if len(matches) > 1:
                     raise ValueError(
-                        f"Launched window identity was ambiguous: {len(matches)} matches"
+                        f"Launched process {launched_process_id} window identity was ambiguous: "
+                        f"{len(matches)} matches; the launched process was not terminated"
                     )
                 if time.monotonic() >= deadline:
                     raise TimeoutError(
-                        f"Timed out waiting for launched window: last match count was {last_count}"
+                        f"Timed out waiting for launched process {launched_process_id} window: "
+                        f"last match count was {last_count}; the launched process was not terminated"
                     )
                 time.sleep(wait_interval)
 

@@ -175,6 +175,20 @@ def test_launch_executable_can_wait_for_verified_window(
         ({"window_process_strategy": "children"}, "window_process_strategy"),
         ({"wait_timeout": 0}, "wait_timeout"),
         ({"wait_interval": 0}, "wait_interval"),
+        ({"wait_timeout": float("nan")}, "wait_timeout must be a finite number"),
+        ({"wait_interval": float("inf")}, "wait_interval must be a finite number"),
+        (
+            {
+                "window_process_strategy": "any_matching_process",
+            },
+            "any_matching_process requires",
+        ),
+        (
+            {
+                "expected_window_process_id": 999,
+            },
+            "cannot override the launched process id",
+        ),
     ],
 )
 def test_launch_executable_rejects_invalid_wait_options_before_popen(
@@ -218,5 +232,35 @@ def test_launch_executable_requires_desktop_before_popen_when_waiting(
             _tools(None)["LaunchExecutable"](
                 executable=str(exe),
                 wait_for_window=True,
+            )
+        )
+
+
+def test_launch_wait_timeout_reports_pid_and_process_retention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exe = tmp_path / "app.exe"
+    exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        launch.subprocess,
+        "Popen",
+        lambda *args, **kwargs: SimpleNamespace(pid=1234),
+    )
+
+    class FakeDesktop:
+        def find_exact_windows(self, **kwargs: object) -> list[dict[str, object]]:
+            return []
+
+    with pytest.raises(
+        TimeoutError,
+        match="process 1234.*not terminated",
+    ):
+        asyncio.run(
+            _tools(FakeDesktop())["LaunchExecutable"](
+                executable=str(exe),
+                wait_for_window=True,
+                wait_timeout=0.001,
+                wait_interval=0.001,
             )
         )
