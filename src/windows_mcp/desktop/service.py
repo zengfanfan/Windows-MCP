@@ -1125,13 +1125,15 @@ class Desktop:
         Plain-text only — control chars (newlines, tabs, braces) need to
         route through SendKeys instead so escape sequences are honored.
         """
-        prior = None
         try:
             prior = uia.GetClipboardText()
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(
+                "Unable to preserve the current clipboard; refusing guarded paste"
+            ) from exc
         try:
-            uia.SetClipboardText(text)
+            if not uia.SetClipboardText(text):
+                raise RuntimeError("Unable to stage text on the clipboard")
             # Tiny pause so the OS clipboard write settles before Ctrl+V reads.
             sleep(0.05)
             if before_paste is not None:
@@ -1139,12 +1141,11 @@ class Desktop:
             uia.SendKeys("{Ctrl}v", waitTime=0.05)
         finally:
             # Restore prior clipboard so guard failures do not leak staged text.
-            if prior is not None:
-                sleep(0.05)
-                try:
-                    uia.SetClipboardText(prior)
-                except Exception:
-                    pass
+            sleep(0.05)
+            try:
+                uia.SetClipboardText(prior)
+            except Exception:
+                pass
 
     def scroll(
         self,
