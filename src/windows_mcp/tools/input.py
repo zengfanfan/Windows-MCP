@@ -1,6 +1,7 @@
 """Input tools — Click, Type, Scroll, Move, Shortcut, Wait, WaitFor."""
 
 import json
+import math
 import time
 from collections.abc import Callable, Iterator
 from typing import Any, Literal
@@ -48,18 +49,51 @@ def _as_loc(value: list | str | None) -> list | None:
 
 
 def _as_optional_int(value: int | str | None) -> int | None:
-    if value is None or isinstance(value, int):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("window handles and process ids must be positive integers")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("window handles and process ids must be positive integers") from exc
+    if parsed <= 0 or (isinstance(value, float) and not value.is_integer()):
+        raise ValueError("window handles and process ids must be positive integers")
+    return parsed
+
+
+def _as_finite_float(value: float | int | str, name: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be a finite number")
+    return parsed
+
+
+def _as_strict_int(value: object, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must contain integers, not booleans")
+    if isinstance(value, int):
         return value
-    return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped and stripped.lstrip("+-").isdigit():
+            return int(stripped)
+    raise ValueError(f"{name} must contain exactly 4 integers")
 
 
 def _as_bounds(value: list | str | None) -> list[int] | None:
     bounds = _as_loc(value)
     if bounds is None:
         return None
-    if len(bounds) != 4:
+    if not isinstance(bounds, list) or len(bounds) != 4:
         raise ValueError("bounds must be [left, top, width, height]")
-    return [int(item) for item in bounds]
+    parsed = [_as_strict_int(item, "bounds") for item in bounds]
+    if parsed[2] <= 0 or parsed[3] <= 0:
+        raise ValueError("bounds width and height must be greater than zero")
+    return parsed
 
 
 def _text_matches(value: object | None, expected: str | None) -> bool:
@@ -648,6 +682,9 @@ def register(
         stable_duration: float = 0.5,
         ctx: Context = None,
     ) -> str:
+        timeout = _as_finite_float(timeout, "timeout")
+        interval = _as_finite_float(interval, "interval")
+        stable_duration = _as_finite_float(stable_duration, "stable_duration")
         normalized = _validate_wait_for_args(
             condition=condition,
             text=text,
@@ -696,13 +733,20 @@ def register(
                 )
                 matched = False
                 if normalized == "window_disappeared":
-                    matched = len(matches) == 0
-                    last_detail = (
-                        "window disappeared"
-                        if matched
-                        else f"window still present: {_format_window_identity(matches[0])}"
-                    )
+                    if matches:
+                        stable_since = None
+                        last_detail = f"window still present: {_format_window_identity(matches[0])}"
+                    else:
+                        stable_since = stable_since or now
+                        matched = now - stable_since >= stable_duration
+                        last_detail = (
+                            "window remained absent for the required stable duration"
+                            if matched
+                            else "window is absent but has not reached the stable duration"
+                        )
                 elif len(matches) != 1:
+                    stable_since = None
+                    last_bounds = None
                     last_detail = f"expected one matching window, found {len(matches)}"
                 elif normalized == "foreground_window":
                     foreground = desktop.get_foreground_window_identity()

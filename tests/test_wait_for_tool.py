@@ -280,6 +280,32 @@ def test_wait_for_window_bounds_stable_uses_exact_identity() -> None:
     assert "condition 'window_bounds_stable' satisfied" in result
 
 
+def test_wait_for_window_bounds_stability_restarts_after_match_interruption() -> None:
+    window = {
+        "handle": 123,
+        "process_id": 456,
+        "process": "target.exe",
+        "title": "Target",
+        "outer": {"left": 10, "top": 20, "width": 300, "height": 200},
+        "client": {"left": 12, "top": 50, "width": 296, "height": 168},
+    }
+    desktop = FakeDesktop([], exact_windows=[[window], [], [window], [window]])
+    tools = _register_tools(desktop)
+
+    result = asyncio.run(
+        tools["WaitFor"](
+            condition="window_bounds_stable",
+            handle=123,
+            stable_duration=0.001,
+            timeout=1,
+            interval=0.001,
+        )
+    )
+
+    assert "bounds stable" in result
+    assert len(desktop.find_calls) >= 4
+
+
 def test_wait_for_window_disappeared_succeeds_when_exact_match_absent() -> None:
     desktop = FakeDesktop([], exact_windows=[[]])
     tools = _register_tools(desktop)
@@ -288,9 +314,56 @@ def test_wait_for_window_disappeared_succeeds_when_exact_match_absent() -> None:
         tools["WaitFor"](
             condition="window_disappeared",
             handle=123,
+            stable_duration=0,
             timeout=1,
             interval=0.001,
         )
     )
 
     assert "condition 'window_disappeared' satisfied" in result
+
+
+def test_wait_for_window_disappeared_requires_stable_absence() -> None:
+    window = {
+        "handle": 123,
+        "process_id": 456,
+        "process": "target.exe",
+        "title": "Target",
+    }
+    desktop = FakeDesktop([], exact_windows=[[], [window], [], []])
+    tools = _register_tools(desktop)
+
+    result = asyncio.run(
+        tools["WaitFor"](
+            condition="window_disappeared",
+            handle=123,
+            stable_duration=0.001,
+            timeout=1,
+            interval=0.001,
+        )
+    )
+
+    assert "required stable duration" in result
+    assert len(desktop.find_calls) >= 4
+
+
+@pytest.mark.parametrize(
+    ("argument", "value"),
+    [
+        ("timeout", float("nan")),
+        ("interval", float("inf")),
+        ("stable_duration", float("nan")),
+    ],
+)
+def test_wait_for_rejects_non_finite_timing_values(argument: str, value: float) -> None:
+    desktop = FakeDesktop([_state()])
+    tools = _register_tools(desktop)
+
+    with pytest.raises(ValueError, match=f"{argument} must be a finite number"):
+        asyncio.run(
+            tools["WaitFor"](
+                condition="foreground_window",
+                handle=123,
+                **{argument: value},
+            )
+        )

@@ -149,6 +149,21 @@ def test_guarded_input_tools_accept_exact_identity_fields() -> None:
     ]
 
 
+def test_guarded_input_rejects_fractional_expected_bounds() -> None:
+    desktop = FakeDesktop()
+
+    with pytest.raises(ValueError, match="bounds must contain exactly 4 integers"):
+        asyncio.run(
+            _tools(desktop)["Click"](
+                loc=[10, 20],
+                expected_outer_bounds=[0, 0, 300.5, 200],
+            )
+        )
+
+    assert desktop.guard_calls == []
+    assert desktop.action_calls == []
+
+
 @pytest.mark.parametrize(
     ("tool_name", "kwargs"),
     [
