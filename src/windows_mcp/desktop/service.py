@@ -1126,11 +1126,14 @@ class Desktop:
         route through SendKeys instead so escape sequences are honored.
         """
         try:
-            prior = uia.GetClipboardText()
+            snapshot_succeeded, prior = uia.TryGetClipboardText()
         except Exception as exc:
             raise RuntimeError(
                 "Unable to preserve the current clipboard; refusing guarded paste"
             ) from exc
+        if not snapshot_succeeded:
+            raise RuntimeError("Unable to preserve the current clipboard; refusing guarded paste")
+        paste_error: BaseException | None = None
         try:
             if not uia.SetClipboardText(text):
                 raise RuntimeError("Unable to stage text on the clipboard")
@@ -1139,13 +1142,24 @@ class Desktop:
             if before_paste is not None:
                 before_paste()
             uia.SendKeys("{Ctrl}v", waitTime=0.05)
+        except BaseException as exc:
+            paste_error = exc
+            raise
         finally:
             # Restore prior clipboard so guard failures do not leak staged text.
             sleep(0.05)
+            restore_error = None
             try:
-                uia.SetClipboardText(prior)
-            except Exception:
-                pass
+                restored = uia.SetClipboardText(prior)
+            except Exception as exc:
+                restored = False
+                restore_error = exc
+            if not restored:
+                message = "Unable to restore the clipboard after guarded paste"
+                if paste_error is None:
+                    raise RuntimeError(message) from restore_error
+                paste_error.add_note(message)
+                logger.error("%s while the guarded paste was already failing", message)
 
     def scroll(
         self,

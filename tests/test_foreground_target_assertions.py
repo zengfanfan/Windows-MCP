@@ -191,7 +191,7 @@ def test_type_restores_clipboard_when_post_wait_guard_fails(
     guard_calls = 0
 
     monkeypatch.setattr(service.uia, "Click", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service.uia, "GetClipboardText", lambda: "previous")
+    monkeypatch.setattr(service.uia, "TryGetClipboardText", lambda: (True, "previous"))
 
     def set_clipboard(text: str) -> bool:
         clipboard_writes.append(text)
@@ -233,8 +233,8 @@ def test_type_refuses_paste_when_clipboard_cannot_be_preserved(
     monkeypatch.setattr(service.uia, "Click", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         service.uia,
-        "GetClipboardText",
-        lambda: (_ for _ in ()).throw(OSError("clipboard unavailable")),
+        "TryGetClipboardText",
+        lambda: (False, ""),
     )
     monkeypatch.setattr(
         service.uia,
@@ -260,3 +260,75 @@ def test_type_refuses_paste_when_clipboard_cannot_be_preserved(
         )
 
     assert clipboard_writes == []
+
+
+def test_type_reports_clipboard_restore_failure_after_paste(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    desktop = _desktop()
+    clipboard_writes: list[str] = []
+
+    monkeypatch.setattr(service.uia, "Click", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.uia, "TryGetClipboardText", lambda: (True, "previous"))
+
+    def set_clipboard(text: str) -> bool:
+        clipboard_writes.append(text)
+        return len(clipboard_writes) == 1
+
+    monkeypatch.setattr(service.uia, "SetClipboardText", set_clipboard)
+    monkeypatch.setattr(service, "sleep", lambda duration: None)
+    monkeypatch.setattr(service.uia, "SendKeys", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        desktop,
+        "assert_foreground_target",
+        lambda **kwargs: {"handle": 100, "process_id": 123},
+    )
+
+    with pytest.raises(RuntimeError, match="Unable to restore the clipboard"):
+        desktop.type(
+            loc=(10, 20),
+            text="this text is long enough to paste",
+            expected_window_handle=100,
+        )
+
+    assert clipboard_writes == ["this text is long enough to paste", "previous"]
+
+
+def test_type_preserves_guard_failure_when_clipboard_restore_also_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    desktop = _desktop()
+
+    monkeypatch.setattr(service.uia, "Click", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.uia, "TryGetClipboardText", lambda: (True, "previous"))
+    monkeypatch.setattr(
+        service.uia,
+        "SetClipboardText",
+        lambda text: text != "previous",
+    )
+    monkeypatch.setattr(service, "sleep", lambda duration: None)
+    monkeypatch.setattr(
+        service.uia,
+        "SendKeys",
+        lambda *args, **kwargs: pytest.fail("text must not be pasted after guard failure"),
+    )
+
+    guard_calls = 0
+
+    def assert_target(**kwargs: object) -> dict[str, object]:
+        nonlocal guard_calls
+        guard_calls += 1
+        if guard_calls == 2:
+            raise ValueError("foreground target mismatch")
+        return {"handle": 100, "process_id": 123}
+
+    monkeypatch.setattr(desktop, "assert_foreground_target", assert_target)
+
+    with pytest.raises(ValueError, match="foreground target mismatch") as exc_info:
+        desktop.type(
+            loc=(10, 20),
+            text="this text is long enough to paste",
+            expected_window_handle=100,
+        )
+
+    assert exc_info.value.__notes__ == ["Unable to restore the clipboard after guarded paste"]
