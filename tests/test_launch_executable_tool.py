@@ -118,6 +118,53 @@ def test_launch_executable_rejects_missing_cwd(tmp_path: Path) -> None:
         )
 
 
+def test_launch_executable_rejects_invalid_wait_boolean_before_popen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exe = tmp_path / "app.exe"
+    exe.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        launch.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("Popen should not be called"),
+    )
+
+    with pytest.raises(ValueError, match="wait_for_window must be true or false"):
+        asyncio.run(
+            _tools()["LaunchExecutable"](
+                executable=str(exe),
+                wait_for_window="tru",
+            )
+        )
+
+
+def test_launch_executable_accepts_false_wait_boolean_string(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exe = tmp_path / "app.exe"
+    exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        launch.subprocess,
+        "Popen",
+        lambda *args, **kwargs: SimpleNamespace(pid=1234),
+    )
+
+    result = json.loads(
+        asyncio.run(
+            _tools()["LaunchExecutable"](
+                executable=str(exe),
+                wait_for_window=" false ",
+            )
+        )
+    )
+
+    assert result["pid"] == 1234
+    assert result["window"] is None
+
+
 def test_launch_executable_can_wait_for_verified_window(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

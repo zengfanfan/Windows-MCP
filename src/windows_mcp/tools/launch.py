@@ -26,7 +26,15 @@ def _as_args(value: list[str] | str | None) -> list[str]:
 
 
 def _as_bool(value: bool | str) -> bool:
-    return value is True or (isinstance(value, str) and value.lower() == "true")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    raise ValueError("wait_for_window must be true or false")
 
 
 def _as_finite_float(value: float | int | str, name: str) -> float:
