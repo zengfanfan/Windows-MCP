@@ -208,6 +208,13 @@ def register(mcp, *, get_desktop, get_analytics):
                         f"Launched process {launched_process_id} window identity was ambiguous: "
                         f"{len(matches)} matches; the launched process was not terminated"
                     )
+                if window_process_strategy == "launched":
+                    return_code = process.poll()
+                    if return_code is not None:
+                        raise RuntimeError(
+                            f"Launched process {launched_process_id} exited with code "
+                            f"{return_code} before its window appeared"
+                        )
                 if time.monotonic() >= deadline:
                     raise TimeoutError(
                         f"Timed out waiting for launched process {launched_process_id} window: "

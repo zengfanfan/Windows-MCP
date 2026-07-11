@@ -245,7 +245,7 @@ def test_launch_wait_timeout_reports_pid_and_process_retention(
     monkeypatch.setattr(
         launch.subprocess,
         "Popen",
-        lambda *args, **kwargs: SimpleNamespace(pid=1234),
+        lambda *args, **kwargs: SimpleNamespace(pid=1234, poll=lambda: None),
     )
 
     class FakeDesktop:
@@ -261,6 +261,33 @@ def test_launch_wait_timeout_reports_pid_and_process_retention(
                 executable=str(exe),
                 wait_for_window=True,
                 wait_timeout=0.001,
+                wait_interval=0.001,
+            )
+        )
+
+
+def test_launch_wait_fails_fast_when_launched_process_exits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exe = tmp_path / "app.exe"
+    exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        launch.subprocess,
+        "Popen",
+        lambda *args, **kwargs: SimpleNamespace(pid=1234, poll=lambda: 7),
+    )
+
+    class FakeDesktop:
+        def find_exact_windows(self, **kwargs: object) -> list[dict[str, object]]:
+            return []
+
+    with pytest.raises(RuntimeError, match="process 1234 exited with code 7"):
+        asyncio.run(
+            _tools(FakeDesktop())["LaunchExecutable"](
+                executable=str(exe),
+                wait_for_window=True,
+                wait_timeout=1,
                 wait_interval=0.001,
             )
         )
