@@ -6,7 +6,7 @@ from windows_mcp.uia import core
 def test_clipboard_snapshot_reports_open_failure(monkeypatch) -> None:
     monkeypatch.setattr(core, "_OpenClipboard", lambda value: False)
 
-    assert core.TryGetClipboardText() == (False, "")
+    assert core.TryGetClipboardText() == (False, "", False)
 
 
 def test_clipboard_snapshot_preserves_empty_clipboard(monkeypatch) -> None:
@@ -25,7 +25,7 @@ def test_clipboard_snapshot_preserves_empty_clipboard(monkeypatch) -> None:
         lambda: close_calls.append(True),
     )
 
-    assert core.TryGetClipboardText() == (True, "")
+    assert core.TryGetClipboardText() == (True, "", False)
     assert close_calls == [True]
 
 
@@ -45,7 +45,7 @@ def test_clipboard_snapshot_refuses_non_text_clipboard(monkeypatch) -> None:
         lambda: close_calls.append(True),
     )
 
-    assert core.TryGetClipboardText() == (False, "")
+    assert core.TryGetClipboardText() == (False, "", False)
     assert close_calls == [True]
 
 
@@ -65,7 +65,7 @@ def test_clipboard_snapshot_refuses_additional_formats(monkeypatch) -> None:
         lambda: close_calls.append(True),
     )
 
-    assert core.TryGetClipboardText() == (False, "")
+    assert core.TryGetClipboardText() == (False, "", False)
     assert close_calls == [True]
 
 
@@ -98,6 +98,21 @@ def test_clipboard_snapshot_reads_unicode_text(monkeypatch) -> None:
         lambda: close_calls.append(True),
     )
 
-    assert core.TryGetClipboardText() == (True, "previous")
+    assert core.TryGetClipboardText() == (True, "previous", True)
     assert unlock_calls == [123]
+    assert close_calls == [True]
+
+
+def test_clear_clipboard_reports_result_and_closes(monkeypatch) -> None:
+    close_calls: list[bool] = []
+
+    monkeypatch.setattr(core, "_OpenClipboard", lambda value: True)
+    monkeypatch.setattr(core.ctypes.windll.user32, "EmptyClipboard", lambda: True)
+    monkeypatch.setattr(
+        core.ctypes.windll.user32,
+        "CloseClipboard",
+        lambda: close_calls.append(True),
+    )
+
+    assert core.ClearClipboard() is True
     assert close_calls == [True]

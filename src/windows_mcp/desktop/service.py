@@ -1126,7 +1126,7 @@ class Desktop:
         route through SendKeys instead so escape sequences are honored.
         """
         try:
-            snapshot_succeeded, prior = uia.TryGetClipboardText()
+            snapshot_succeeded, prior, prior_had_text = uia.TryGetClipboardText()
         except Exception as exc:
             raise RuntimeError(
                 "Unable to preserve the current clipboard; refusing guarded paste"
@@ -1150,7 +1150,7 @@ class Desktop:
             sleep(0.05)
             restore_error = None
             try:
-                restored = uia.SetClipboardText(prior)
+                restored = uia.SetClipboardText(prior) if prior_had_text else uia.ClearClipboard()
             except Exception as exc:
                 restored = False
                 restore_error = exc

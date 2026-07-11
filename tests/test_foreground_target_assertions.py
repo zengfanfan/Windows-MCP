@@ -191,7 +191,7 @@ def test_type_restores_clipboard_when_post_wait_guard_fails(
     guard_calls = 0
 
     monkeypatch.setattr(service.uia, "Click", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service.uia, "TryGetClipboardText", lambda: (True, "previous"))
+    monkeypatch.setattr(service.uia, "TryGetClipboardText", lambda: (True, "previous", True))
 
     def set_clipboard(text: str) -> bool:
         clipboard_writes.append(text)
@@ -234,7 +234,7 @@ def test_type_refuses_paste_when_clipboard_cannot_be_preserved(
     monkeypatch.setattr(
         service.uia,
         "TryGetClipboardText",
-        lambda: (False, ""),
+        lambda: (False, "", False),
     )
     monkeypatch.setattr(
         service.uia,
@@ -269,7 +269,7 @@ def test_type_reports_clipboard_restore_failure_after_paste(
     clipboard_writes: list[str] = []
 
     monkeypatch.setattr(service.uia, "Click", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service.uia, "TryGetClipboardText", lambda: (True, "previous"))
+    monkeypatch.setattr(service.uia, "TryGetClipboardText", lambda: (True, "previous", True))
 
     def set_clipboard(text: str) -> bool:
         clipboard_writes.append(text)
@@ -300,7 +300,7 @@ def test_type_preserves_guard_failure_when_clipboard_restore_also_fails(
     desktop = _desktop()
 
     monkeypatch.setattr(service.uia, "Click", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service.uia, "TryGetClipboardText", lambda: (True, "previous"))
+    monkeypatch.setattr(service.uia, "TryGetClipboardText", lambda: (True, "previous", True))
     monkeypatch.setattr(
         service.uia,
         "SetClipboardText",
@@ -332,3 +332,40 @@ def test_type_preserves_guard_failure_when_clipboard_restore_also_fails(
         )
 
     assert exc_info.value.__notes__ == ["Unable to restore the clipboard after guarded paste"]
+
+
+def test_type_restores_a_genuinely_empty_clipboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    desktop = _desktop()
+    clipboard_writes: list[str] = []
+    clear_calls: list[bool] = []
+
+    monkeypatch.setattr(service.uia, "Click", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.uia, "TryGetClipboardText", lambda: (True, "", False))
+    monkeypatch.setattr(
+        service.uia,
+        "SetClipboardText",
+        lambda text: clipboard_writes.append(text) or True,
+    )
+    monkeypatch.setattr(
+        service.uia,
+        "ClearClipboard",
+        lambda: clear_calls.append(True) or True,
+    )
+    monkeypatch.setattr(service, "sleep", lambda duration: None)
+    monkeypatch.setattr(service.uia, "SendKeys", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        desktop,
+        "assert_foreground_target",
+        lambda **kwargs: {"handle": 100, "process_id": 123},
+    )
+
+    desktop.type(
+        loc=(10, 20),
+        text="this text is long enough to paste",
+        expected_window_handle=100,
+    )
+
+    assert clipboard_writes == ["this text is long enough to paste"]
+    assert clear_calls == [True]

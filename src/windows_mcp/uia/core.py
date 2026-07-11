@@ -2044,36 +2044,47 @@ def GetClipboardText() -> str:
     return ""
 
 
-def TryGetClipboardText() -> Tuple[bool, str]:
+def TryGetClipboardText() -> Tuple[bool, str, bool]:
     """Snapshot Unicode clipboard text without conflating failure with empty text.
 
-    Return ``(True, text)`` when the clipboard is empty or contains only readable
-    Unicode text. Return ``(False, "")`` when the clipboard cannot be opened,
-    contains additional formats that this snapshot cannot preserve, or cannot be
-    read.
+    Return ``(success, text, had_text_format)`` so callers can distinguish a
+    genuinely empty clipboard from one containing an empty Unicode string.
+    Failure means the clipboard cannot be opened, contains additional formats
+    that this snapshot cannot preserve, or cannot be read.
     """
     with _ClipboardLock:
         if not _OpenClipboard(0):
-            return False, ""
+            return False, "", False
         try:
             if not ctypes.windll.user32.IsClipboardFormatAvailable(ClipboardFormat.CF_UNICODETEXT):
                 if ctypes.windll.user32.CountClipboardFormats() == 0:
-                    return True, ""
-                return False, ""
+                    return True, "", False
+                return False, "", False
             if ctypes.windll.user32.CountClipboardFormats() != 1:
-                return False, ""
+                return False, "", False
 
             hClipboardData = ctypes.windll.user32.GetClipboardData(ClipboardFormat.CF_UNICODETEXT)
             if not hClipboardData:
-                return False, ""
+                return False, "", False
             hText = ctypes.windll.kernel32.GlobalLock(ctypes.c_void_p(hClipboardData))
             if not hText:
-                return False, ""
+                return False, "", False
             try:
                 text = ctypes.c_wchar_p(hText).value
-                return True, text or ""
+                return True, text or "", True
             finally:
                 ctypes.windll.kernel32.GlobalUnlock(ctypes.c_void_p(hClipboardData))
+        finally:
+            ctypes.windll.user32.CloseClipboard()
+
+
+def ClearClipboard() -> bool:
+    """Empty the clipboard, returning whether the operation succeeded."""
+    with _ClipboardLock:
+        if not _OpenClipboard(0):
+            return False
+        try:
+            return bool(ctypes.windll.user32.EmptyClipboard())
         finally:
             ctypes.windll.user32.CloseClipboard()
 
