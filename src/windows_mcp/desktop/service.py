@@ -14,7 +14,9 @@ from concurrent.futures import ThreadPoolExecutor
 from PIL import ImageFont, ImageDraw, Image
 from windows_mcp.tree.service import Tree
 from windows_mcp.desktop import screenshot as screenshot_capture
+from windows_mcp.desktop.control import get_controller
 from windows_mcp.desktop import flash_overlay
+from windows_mcp.desktop import control_overlay
 from windows_mcp.infrastructure import validate_url
 from urllib.parse import urljoin
 from locale import getpreferredencoding
@@ -649,11 +651,14 @@ class Desktop:
         return results
 
     def click(self, loc: tuple[int, int] | list[int], button: str = "left", clicks: int = 1):
+        owner = get_controller()
+        owner.checkpoint_current()
         if isinstance(loc, list):
             x, y = loc[0], loc[1]
         else:
             x, y = loc
         if clicks == 0:
+            owner.checkpoint_current()
             uia.SetCursorPos(x, y)
             return
         match button:
@@ -661,15 +666,23 @@ class Desktop:
                 if clicks >= 2:
                     dbl_wait = uia.GetDoubleClickTime() / 2000.0
                     for i in range(clicks):
+                        owner.checkpoint_current()
                         uia.Click(x, y, waitTime=dbl_wait if i < clicks - 1 else 0.5)
+                        owner.record_step_current()
                 else:
+                    owner.checkpoint_current()
                     uia.Click(x, y)
+                    owner.record_step_current()
             case "right":
                 for _ in range(clicks):
+                    owner.checkpoint_current()
                     uia.RightClick(x, y)
+                    owner.record_step_current()
             case "middle":
                 for _ in range(clicks):
+                    owner.checkpoint_current()
                     uia.MiddleClick(x, y)
+                    owner.record_step_current()
 
     # Strings longer than this typed via clipboard paste instead of
     # per-key SendKeys. SendKeys at high cadence loses keystrokes on
@@ -689,28 +702,43 @@ class Desktop:
         clear: bool | str = False,
         press_enter: bool | str = False,
     ):
+        owner = get_controller()
+        owner.checkpoint_current()
         x, y = loc
         uia.Click(x, y)
+        owner.record_step_current()
         if caret_position == "start":
+            owner.checkpoint_current()
             uia.SendKeys("{Home}", waitTime=0.05)
+            owner.record_step_current()
         elif caret_position == "end":
+            owner.checkpoint_current()
             uia.SendKeys("{End}", waitTime=0.05)
+            owner.record_step_current()
         if clear is True or (isinstance(clear, str) and clear.lower() == "true"):
             sleep(0.5)
+            owner.checkpoint_current()
             uia.SendKeys("{Ctrl}a", waitTime=0.05)
+            owner.record_step_current()
+            owner.checkpoint_current()
             uia.SendKeys("{Back}", waitTime=0.05)
+            owner.record_step_current()
         # Per-key SendKeys for short text (so escape sequences keep working);
         # clipboard paste for long text (so the scan-code queue can't race).
         has_control_chars = any(c in text for c in ("\n", "\t", "{", "}"))
         if len(text) >= self._LONG_TEXT_PASTE_THRESHOLD and not has_control_chars:
             self._paste_text(text)
         else:
-            escaped_text = _escape_text_for_sendkeys(text)
             # Bump interval from 0.02 → 0.04. Keeps short-text speed acceptable
-            # while reducing key-loss on slower systems.
-            uia.SendKeys(escaped_text, interval=0.04, waitTime=0.05)
+            # while reducing key-loss; each character is a cancellation point.
+            for ch in text:
+                owner.checkpoint_current()
+                uia.SendKeys(_escape_text_for_sendkeys(ch), interval=0.04, waitTime=0.05)
+                owner.record_step_current()
         if press_enter is True or (isinstance(press_enter, str) and press_enter.lower() == "true"):
+            owner.checkpoint_current()
             uia.SendKeys("{Enter}", waitTime=0.05)
+            owner.record_step_current()
 
     def _paste_text(self, text: str):
         """Stash text on the clipboard, Ctrl+V, restore prior clipboard.
@@ -718,6 +746,8 @@ class Desktop:
         route through SendKeys instead so escape sequences are honored.
         """
         prior = None
+        owner = get_controller()
+        owner.checkpoint_current()
         try:
             prior = uia.GetClipboardText()
         except Exception:
@@ -725,14 +755,18 @@ class Desktop:
         uia.SetClipboardText(text)
         # Tiny pause so the OS clipboard write settles before Ctrl+V reads.
         sleep(0.05)
-        uia.SendKeys("{Ctrl}v", waitTime=0.05)
-        # Restore prior clipboard so we don't surprise other tools.
-        if prior is not None:
-            sleep(0.05)
-            try:
-                uia.SetClipboardText(prior)
-            except Exception:
-                pass
+        try:
+            owner.checkpoint_current()
+            uia.SendKeys("{Ctrl}v", waitTime=0.05)
+            owner.record_step_current()
+        finally:
+            # Do not overwrite a clipboard value changed by the user.
+            if prior is not None:
+                try:
+                    if uia.GetClipboardText() == text:
+                        uia.SetClipboardText(prior)
+                except Exception:
+                    pass
 
     def scroll(
         self,
@@ -741,29 +775,55 @@ class Desktop:
         direction: Literal["up", "down", "left", "right"] = "down",
         wheel_times: int = 1,
     ) -> str | None:
+        owner = get_controller()
+        owner.checkpoint_current()
         if loc:
             self.move(loc)
         match type:
             case "vertical":
                 match direction:
                     case "up":
-                        uia.WheelUp(wheel_times)
+                        for _ in range(wheel_times):
+                            owner.checkpoint_current()
+                            uia.WheelUp(1)
+                            owner.record_step_current()
                     case "down":
-                        uia.WheelDown(wheel_times)
+                        for _ in range(wheel_times):
+                            owner.checkpoint_current()
+                            uia.WheelDown(1)
+                            owner.record_step_current()
                     case _:
                         return 'Invalid direction. Use "up" or "down".'
             case "horizontal":
                 match direction:
                     case "left":
-                        uia.PressKey(uia.Keys.VK_SHIFT, waitTime=0.05)
-                        uia.WheelUp(wheel_times)
-                        sleep(0.05)
-                        uia.ReleaseKey(uia.Keys.VK_SHIFT, waitTime=0.05)
+                        try:
+                            owner.input_ledger.press(
+                                "key:shift",
+                                lambda: uia.PressKey(uia.Keys.VK_SHIFT, waitTime=0.05),
+                                lambda: uia.ReleaseKey(uia.Keys.VK_SHIFT, waitTime=0.05),
+                                lambda: owner.physical_key_down(uia.Keys.VK_SHIFT),
+                            )
+                            for _ in range(wheel_times):
+                                owner.checkpoint_current()
+                                uia.WheelUp(1)
+                                owner.record_step_current()
+                        finally:
+                            owner.input_ledger.release("key:shift")
                     case "right":
-                        uia.PressKey(uia.Keys.VK_SHIFT, waitTime=0.05)
-                        uia.WheelDown(wheel_times)
-                        sleep(0.05)
-                        uia.ReleaseKey(uia.Keys.VK_SHIFT, waitTime=0.05)
+                        try:
+                            owner.input_ledger.press(
+                                "key:shift",
+                                lambda: uia.PressKey(uia.Keys.VK_SHIFT, waitTime=0.05),
+                                lambda: uia.ReleaseKey(uia.Keys.VK_SHIFT, waitTime=0.05),
+                                lambda: owner.physical_key_down(uia.Keys.VK_SHIFT),
+                            )
+                            for _ in range(wheel_times):
+                                owner.checkpoint_current()
+                                uia.WheelDown(1)
+                                owner.record_step_current()
+                        finally:
+                            owner.input_ledger.release("key:shift")
                     case _:
                         return 'Invalid direction. Use "left" or "right".'
             case _:
@@ -771,19 +831,46 @@ class Desktop:
         return None
 
     def drag(self, loc: tuple[int, int] | list[int]):
+        owner = get_controller()
+        owner.checkpoint_current()
         if isinstance(loc, list):
             x, y = loc[0], loc[1]
         else:
             x, y = loc
         sleep(0.5)
+        owner.checkpoint_current()
         cx, cy = uia.GetCursorPos()
-        uia.DragDrop(cx, cy, x, y, moveSpeed=1)
+        try:
+            owner.input_ledger.press(
+                "mouse:left",
+                lambda: uia.PressMouse(cx, cy, waitTime=0.05),
+                lambda: uia.ReleaseMouse(waitTime=0.05),
+                lambda: owner.physical_mouse_down("left"),
+            )
+            steps = max(1, min(80, max(abs(x - cx), abs(y - cy)) // 20))
+            for step in range(1, steps + 1):
+                owner.checkpoint_current()
+                uia.SetCursorPos(cx + (x - cx) * step // steps, cy + (y - cy) * step // steps)
+                owner.record_step_current()
+                sleep(0.01)
+        finally:
+            owner.input_ledger.release("mouse:left")
 
     def move(self, loc: tuple[int, int]):
+        owner = get_controller()
         x, y = loc
-        uia.MoveTo(x, y, moveSpeed=10)
+        owner.checkpoint_current()
+        cx, cy = uia.GetCursorPos()
+        steps = max(1, min(80, max(abs(x - cx), abs(y - cy)) // 20))
+        for step in range(1, steps + 1):
+            owner.checkpoint_current()
+            uia.SetCursorPos(cx + (x - cx) * step // steps, cy + (y - cy) * step // steps)
+            owner.record_step_current()
+            sleep(0.003)
 
     def shortcut(self, shortcut: str):
+        owner = get_controller()
+        owner.checkpoint_current()
         keys = shortcut.split("+")
         sendkeys_str = ""
         for key in keys:
@@ -794,21 +881,35 @@ class Desktop:
                 name = _KEY_ALIASES.get(key.lower(), key)
                 sendkeys_str += "{" + name + "}"
         uia.SendKeys(sendkeys_str, interval=0.01)
+        owner.record_step_current()
 
     def multi_select(self, press_ctrl: bool | str = False, locs: list[tuple[int, int]] = []):
+        owner = get_controller()
+        owner.checkpoint_current()
         press_ctrl = press_ctrl is True or (
             isinstance(press_ctrl, str) and press_ctrl.lower() == "true"
         )
-        if press_ctrl:
-            uia.PressKey(uia.Keys.VK_CONTROL, waitTime=0.05)
-        for loc in locs:
-            x, y = loc
-            uia.Click(x, y, waitTime=0.2)
-            sleep(0.5)
-        uia.ReleaseKey(uia.Keys.VK_CONTROL, waitTime=0.05)
+        try:
+            if press_ctrl:
+                owner.input_ledger.press(
+                    "key:ctrl",
+                    lambda: uia.PressKey(uia.Keys.VK_CONTROL, waitTime=0.05),
+                    lambda: uia.ReleaseKey(uia.Keys.VK_CONTROL, waitTime=0.05),
+                    lambda: owner.physical_key_down(uia.Keys.VK_CONTROL),
+                )
+            for loc in locs:
+                owner.checkpoint_current()
+                x, y = loc
+                uia.Click(x, y, waitTime=0.2)
+                owner.record_step_current()
+                sleep(0.5)
+        finally:
+            if press_ctrl:
+                owner.input_ledger.release("key:ctrl")
 
     def multi_edit(self, locs: list[tuple[int, int, str]]):
         for loc in locs:
+            get_controller().checkpoint_current()
             x, y, text = loc
             self.type((x, y), text=text, clear=True)
 
@@ -1098,9 +1199,13 @@ class Desktop:
         )
 
     def get_screenshot(self, capture_rect: uia.Rect | None = None) -> Image.Image:
-        flash_overlay.cancel_active_flash()
-        image, used_backend = screenshot_capture.capture(capture_rect)
-        self._last_screenshot_backend = used_backend
+        # The persistent AI indicator is hidden and acknowledged before any
+        # screenshot backend reads pixels; it is restored even if capture fails.
+        with control_overlay.suspend_for_capture():
+            if not flash_overlay.cancel_active_flash():
+                raise RuntimeError("Previous screenshot flash did not close before capture")
+            image, used_backend = screenshot_capture.capture(capture_rect)
+            self._last_screenshot_backend = used_backend
         flash_overlay.show_capture_flash(capture_rect)
         return image
 

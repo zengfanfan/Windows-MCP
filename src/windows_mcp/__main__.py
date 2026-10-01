@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from windows_mcp.config import enable_debug
+from windows_mcp.infrastructure.config import ControlConfig
 from windows_mcp.infrastructure import (
     AuthKeyMiddleware,
     OAuthOnlyMiddleware,
@@ -28,6 +29,7 @@ import asyncio
 import shlex
 import secrets
 import subprocess
+import threading
 import click
 import os
 import sys
@@ -61,6 +63,8 @@ watchdog: Any | None = None
 analytics: Any | None = None
 screen_size: Any | None = None
 _mcp: FastMCP | None = None
+_control_config = ControlConfig()
+_control_notifier: Any | None = None
 
 instructions = dedent("""
 Windows MCP server provides tools to interact directly with the Windows desktop,
@@ -163,7 +167,7 @@ class OptionsMiddleware:
 
 def _build_mcp() -> FastMCP:
     """Create the MCP server instance."""
-    global _mcp
+    global _mcp, _control_notifier
 
     if _mcp is not None:
         return _mcp
@@ -171,12 +175,57 @@ def _build_mcp() -> FastMCP:
     from windows_mcp.infrastructure import PostHogAnalytics
     from windows_mcp.desktop.service import Desktop
     from windows_mcp.tools import register_all
+    from windows_mcp.tools.control_notifications import ControlNotifier, ControlToolGate
+    from windows_mcp.desktop.control import get_controller
+    from windows_mcp.desktop import control_overlay
     from windows_mcp.watchdog.service import WatchDog
+
+    controller = get_controller()
+    notifier = ControlNotifier(controller)
+    _control_notifier = notifier
+    control_loop: asyncio.AbstractEventLoop | None = None
+
+    def apply_control_state(status: dict) -> None:
+        try:
+            # Queued input-thread updates can arrive after a later takeover.
+            # Never let an old AI event re-show the indicator in user mode.
+            if (status.get("generation") is not None and
+                    status["generation"] != controller.status().get("generation")):
+                return
+            if status["state"] == "ai":
+                control_overlay.set_active(True)
+            elif status["state"] == "takeover_pending":
+                control_overlay.set_pending(True)
+            else:
+                control_overlay.set_active(False)
+        except Exception:
+            # A missing visual indicator invalidates the AI control lease.
+            controller._fail_open()
+            logger.exception("AI control indicator failed; releasing physical input")
+
+    def show_control_state(status: dict) -> None:
+        if threading.current_thread() is controller._thread:
+            # Never wait for a window-owner acknowledgement on the hook thread.
+            # Windows can silently remove a low level hook after a slow callback.
+            try:
+                if control_loop is None or control_loop.is_closed():
+                    raise RuntimeError("server event loop unavailable")
+                control_loop.call_soon_threadsafe(apply_control_state, status.copy())
+            except RuntimeError:
+                controller._fail_open()
+                logger.exception("Could not schedule AI control indicator update")
+        else:
+            # begin_call waits for the visible AI indicator before any tool runs.
+            apply_control_state(status)
+
+    controller.subscribe(show_control_state)
 
     @asynccontextmanager
     async def lifespan(app: FastMCP):
         """Runs initialization code before the server starts and cleanup code after it shuts down."""
         global desktop, watchdog, analytics, screen_size
+        nonlocal control_loop
+        control_loop = asyncio.get_running_loop()
 
         if os.getenv("ANONYMIZED_TELEMETRY", "true").lower() != "false":
             analytics = PostHogAnalytics()
@@ -185,19 +234,36 @@ def _build_mcp() -> FastMCP:
         screen_size = desktop.get_screen_size()
         watchdog.set_focus_callback(desktop.tree.on_focus_change)
 
+        # Set thresholds before installing input hooks; invalid TOML was rejected at load.
+        controller.mouse_takeover_units = _control_config.mouse_takeover_units
+        controller.mouse_takeover_pixels = _control_config.mouse_takeover_pixels
+
         try:
+            control_overlay.start()
+            controller.set_health_probe(control_overlay.is_healthy)
+            controller.start()
+            notifier.start()
             watchdog.start()
             await asyncio.sleep(1)  # Simulate startup latency
             logger.debug("Server started, entering main loop")
             yield
         finally:
-            logger.debug("Shutting down: stopping watchdog and analytics")
-            if watchdog:
-                watchdog.stop()
-            if analytics:
-                await analytics.close()
+            await notifier.close()
+            try:
+                controller.stop()
+            finally:
+                try:
+                    control_overlay.stop()
+                finally:
+                    logger.debug("Shutting down: stopping watchdog and analytics")
+                    if watchdog:
+                        watchdog.stop()
+                    if analytics:
+                        await analytics.close()
+                    control_loop = None
 
     _mcp = FastMCP(name="windows-mcp", instructions=instructions, lifespan=lifespan)
+    _mcp.add_middleware(ControlToolGate(controller, notifier))
     register_all(_mcp, get_desktop=_get_desktop, get_analytics=_get_analytics)
     return _mcp
 
@@ -308,11 +374,12 @@ def _apply_tool_filter(
 
     if explicit_tools:
         keep = {t for t in explicit_tools if t in registered}
+        keep.add("ControlStatus")
         for name in registered - keep:
             _remove(name)
     elif exclude_tools:
         for name in exclude_tools:
-            if name in registered:
+            if name in registered and name != "ControlStatus":
                 _remove(name)
     logger.debug("Tool filter applied: explicit=%s exclude=%s", explicit_tools, exclude_tools)
 
@@ -333,6 +400,13 @@ def _run_server(
     stateless_http: bool = False,
 ) -> None:
     mcp = _build_mcp()
+    if _control_notifier is not None:
+        # stdio has one session until process exit; stateless HTTP has no
+        # durable session to which a later ownership event can be pushed.
+        _control_notifier.ttl = float("inf") if transport == "stdio" else 60.0
+        _control_notifier.push_enabled = not (
+            transport == "streamable-http" and stateless_http
+        )
     if explicit_tools or exclude_tools:
         _apply_tool_filter(mcp, explicit_tools, exclude_tools)
     match transport:
@@ -511,6 +585,7 @@ def serve(
     oauth_client_secret,
     stateless_http,
 ):
+    global _control_config
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     if transport == Transport.STDIO.value:
         os.environ.setdefault("NO_COLOR", "1")
@@ -526,6 +601,7 @@ def serve(
         cfg = load_config(config_path)
     except (FileNotFoundError, ValueError) as exc:
         raise click.ClickException(str(exc))
+    _control_config = cfg.control
 
     transport = _choose_value(ctx, "transport", transport, cfg.server.transport, "stdio")
     host = _choose_value(ctx, "host", host, cfg.server.host, "localhost")
