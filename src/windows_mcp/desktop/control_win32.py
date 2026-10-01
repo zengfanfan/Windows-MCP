@@ -174,5 +174,3 @@ def _interactive_desktop() -> bool:
         )) and name.value.casefold() == "default"
     finally:
         _user32.CloseDesktop(desktop)
-
-\n
