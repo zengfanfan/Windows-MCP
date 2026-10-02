@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 _BORDER = 56
 _CURSOR_SIZE = 88
 _REFRESH_SECONDS = 0.05
+_BREATH_PERIOD_SECONDS = 3.0
+_BREATH_MIN_ALPHA = 140
 _SW_HIDE = 0
 _WDA_EXCLUDEFROMCAPTURE = 0x00000011
 _BLUE = (45, 145, 255)
@@ -34,6 +36,12 @@ _user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
 _user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
 _user32.IsWindowVisible.argtypes = [wintypes.HWND]
 _user32.IsWindowVisible.restype = wintypes.BOOL
+
+
+def _breath_opacity(elapsed: float) -> int:
+    """Start bright and cycle smoothly while keeping the control cue visible."""
+    strength = (1 + math.cos(2 * math.pi * elapsed / _BREATH_PERIOD_SECONDS)) / 2
+    return round(_BREATH_MIN_ALPHA + (255 - _BREATH_MIN_ALPHA) * strength)
 
 
 def _glow_alpha(depth: int, extent: int = _BORDER) -> int:
@@ -102,6 +110,8 @@ class _Layer:
         self.hwnd, self.instance = flash_overlay._create_layered_window(
             self.class_name, x, y, width, height
         )
+        self.bgra = bgra
+        self.opacity: int | None = None
         try:
             flash_overlay._push_bitmap(self.hwnd, x, y, width, height, bgra)
             if not _user32.SetWindowDisplayAffinity(self.hwnd, _WDA_EXCLUDEFROMCAPTURE):
@@ -111,6 +121,17 @@ class _Layer:
         except BaseException:
             self.close()
             raise
+
+    def set_opacity(self, opacity: int) -> None:
+        """Modulate an existing bitmap without rebuilding its per-pixel glow."""
+        if self.opacity == opacity:
+            return
+        # Use the bitmap API for every frame. SetLayeredWindowAttributes can
+        # report success here while replacing the visible per-pixel bitmap.
+        flash_overlay._push_bitmap(
+            self.hwnd, self.x, self.y, self.width, self.height, self.bgra, opacity=opacity
+        )
+        self.opacity = opacity
 
     def show(self) -> None:
         _user32.ShowWindow(self.hwnd, flash_overlay._SW_SHOWNA)
@@ -269,6 +290,8 @@ class _Indicator:
         rects: tuple[tuple[int, int, int, int], ...] = ()
         mode: bool | None = None
         visible = False
+        was_active = False
+        breath_started = 0.0
         try:
             self.heartbeat = time.monotonic()
             self.started.set()
@@ -280,6 +303,8 @@ class _Indicator:
                     active, pending = self.active, self.pending
                     suspended, version = self.suspended, self.version
                 if active:
+                    if not was_active:
+                        breath_started = time.monotonic()
                     current_rects = _monitor_rects()
                     if ring is None or current_rects != rects or mode != pending:
                         for layer in reversed(layers):
@@ -298,10 +323,16 @@ class _Indicator:
                             ring.hide()
                             visible = False
                     else:
+                        opacity = _breath_opacity(time.monotonic() - breath_started)
+                        for layer in layers:
+                            layer.set_opacity(opacity)
+                        if not pending:
+                            ring.set_opacity(opacity)
                         if not visible:
                             for layer in layers:
                                 layer.show()
-                            ring.show()
+                            if not pending:
+                                ring.show()
                             visible = True
                         if not pending:
                             point = flash_overlay._POINT()
@@ -315,6 +346,7 @@ class _Indicator:
                     if ring:
                         ring.hide()
                     visible = False
+                was_active = active
                 # Pump messages on the owning thread, including display events.
                 for layer in layers:
                     flash_overlay._pump_messages(layer.hwnd)

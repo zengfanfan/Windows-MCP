@@ -29,6 +29,46 @@ def _alpha_at(bgra: bytes, width: int, x: int, y: int) -> int:
     return bgra[(y * width + x) * 4 + 3]
 
 
+def test_breath_opacity_is_smooth_periodic_and_never_disappears():
+    opacity = control_overlay._breath_opacity
+    period = control_overlay._BREATH_PERIOD_SECONDS
+    assert opacity(0) == opacity(period) == 255
+    assert opacity(period / 2) == control_overlay._BREATH_MIN_ALPHA == 140
+    assert opacity(period / 4) == opacity(3 * period / 4)
+    frames = [opacity(index * control_overlay._REFRESH_SECONDS) for index in range(61)]
+    assert all(140 <= value <= 255 for value in frames)
+    assert max(abs(a - b) for a, b in zip(frames, frames[1:])) <= 7
+
+
+def test_layer_opacity_updates_only_on_change_and_fails_closed(monkeypatch):
+    layer = object.__new__(control_overlay._Layer)
+    layer.hwnd = 123
+    layer.x, layer.y, layer.width, layer.height = 10, 20, 1, 1
+    layer.bgra = bytes((0, 0, 0, 0))
+    layer.opacity = None
+    calls = []
+
+    def push_bitmap(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(flash_overlay, "_push_bitmap", push_bitmap)
+    layer.set_opacity(200)
+    layer.set_opacity(200)
+    layer.set_opacity(140)
+    assert calls == [
+        ((123, 10, 20, 1, 1, layer.bgra), {"opacity": 200}),
+        ((123, 10, 20, 1, 1, layer.bgra), {"opacity": 140}),
+    ]
+
+    def failed_upload(*args, **kwargs):
+        raise OSError("upload failed")
+
+    monkeypatch.setattr(flash_overlay, "_push_bitmap", failed_upload)
+    with pytest.raises(OSError, match="upload failed"):
+        layer.set_opacity(255)
+    assert layer.opacity == 140
+
+
 def test_edge_and_cursor_have_soft_glow_without_a_solid_contour():
     size = control_overlay._BORDER
     assert size == 56  # The requested doubling of the former 28-pixel glow.
@@ -157,6 +197,12 @@ def test_indicator_lifecycle_and_no_restore_after_takeover(monkeypatch):
     class FakeLayer:
         hwnd = 1
 
+        def __init__(self, name):
+            self.name = name
+
+        def set_opacity(self, value):
+            events.append(("opacity", self.name, value))
+
         def show(self):
             events.append("show")
 
@@ -170,7 +216,12 @@ def test_indicator_lifecycle_and_no_restore_after_takeover(monkeypatch):
             events.append("close")
 
     monkeypatch.setattr(control_overlay, "_monitor_rects", lambda: ((0, 0, 800, 600),))
-    monkeypatch.setattr(control_overlay, "_build_layers", lambda rects, pending: ([FakeLayer()], FakeLayer()))
+    monkeypatch.setattr(
+        control_overlay,
+        "_build_layers",
+        lambda rects, pending: ([FakeLayer("edge")], FakeLayer("cursor")),
+    )
+    monkeypatch.setattr(control_overlay, "_breath_opacity", lambda elapsed: 177)
     monkeypatch.setattr(control_overlay._user32, "GetCursorPos", lambda ptr: True)
     monkeypatch.setattr(flash_overlay, "_pump_messages", lambda hwnd: None)
     assert control_overlay.is_healthy() is False
@@ -178,6 +229,8 @@ def test_indicator_lifecycle_and_no_restore_after_takeover(monkeypatch):
     assert control_overlay.is_healthy() is True
     control_overlay.set_active(True)
     assert events.count("show") == 2
+    assert ("opacity", "edge", 177) in events
+    assert ("opacity", "cursor", 177) in events
     with control_overlay.suspend_for_capture():
         assert events.count("hide") == 2
         control_overlay.set_active(False)
@@ -185,6 +238,46 @@ def test_indicator_lifecycle_and_no_restore_after_takeover(monkeypatch):
     control_overlay.stop()
     assert control_overlay.is_healthy() is False
     assert events.count("close") == 2
+
+
+def test_pending_indicator_never_flashes_cursor_layer(monkeypatch):
+    events = []
+
+    class FakeLayer:
+        hwnd = 1
+
+        def __init__(self, name):
+            self.name = name
+
+        def set_opacity(self, value):
+            pass
+
+        def show(self):
+            events.append(("show", self.name))
+
+        def hide(self):
+            events.append(("hide", self.name))
+
+        def move(self, x, y):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(control_overlay, "_monitor_rects", lambda: ((0, 0, 800, 600),))
+    monkeypatch.setattr(
+        control_overlay,
+        "_build_layers",
+        lambda rects, pending: ([FakeLayer(f"edge_{pending}")], FakeLayer(f"cursor_{pending}")),
+    )
+    monkeypatch.setattr(control_overlay._user32, "GetCursorPos", lambda ptr: True)
+    monkeypatch.setattr(flash_overlay, "_pump_messages", lambda hwnd: None)
+    control_overlay.start()
+    control_overlay.set_active(True)
+    control_overlay.set_pending(True)
+    control_overlay.stop()
+    assert ("show", "edge_True") in events
+    assert ("show", "cursor_True") not in events
 
 
 def test_failed_indicator_reports_unhealthy(monkeypatch):

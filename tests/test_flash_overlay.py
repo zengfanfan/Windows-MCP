@@ -261,6 +261,33 @@ class TestIntensityCurve:
 
 
 class TestPremultipliedBgra:
+    def test_bitmap_upload_combines_constant_and_pixel_alpha(self, monkeypatch):
+        pixels = ctypes.create_string_buffer(4)
+        blend_alphas = []
+
+        def create_dib(*args):
+            ctypes.cast(args[3], ctypes.POINTER(ctypes.c_void_p)).contents.value = (
+                ctypes.addressof(pixels)
+            )
+            return 3
+
+        def update_window(*args):
+            blend_alphas.append(ctypes.string_at(args[7], 4)[2])
+            return True
+
+        monkeypatch.setattr(flash_overlay._user32, "GetDC", lambda hwnd: 1)
+        monkeypatch.setattr(flash_overlay._user32, "ReleaseDC", lambda *args: None)
+        monkeypatch.setattr(flash_overlay._user32, "UpdateLayeredWindow", update_window)
+        monkeypatch.setattr(flash_overlay._gdi32, "CreateCompatibleDC", lambda hdc: 2)
+        monkeypatch.setattr(flash_overlay._gdi32, "CreateDIBSection", create_dib)
+        monkeypatch.setattr(flash_overlay._gdi32, "SelectObject", lambda *args: 4)
+        monkeypatch.setattr(flash_overlay._gdi32, "DeleteObject", lambda handle: None)
+        monkeypatch.setattr(flash_overlay._gdi32, "DeleteDC", lambda handle: None)
+
+        flash_overlay._push_bitmap(1, 0, 0, 1, 1, bytes(4), opacity=140)
+        flash_overlay._push_bitmap(1, 0, 0, 1, 1, bytes(4))
+        assert blend_alphas == [140, 255]
+
     def test_full_intensity_clears_color_when_alpha_is_zero(self):
         from PIL import Image
 
