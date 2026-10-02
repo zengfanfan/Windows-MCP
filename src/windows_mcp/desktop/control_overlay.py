@@ -101,6 +101,28 @@ def _cursor_bitmap(color: tuple[int, int, int]) -> bytes:
     return flash_overlay._premultiplied_bgra(image, 1.0)
 
 
+def _notice_shape_mask(width: int, height: int, radius: int = 22) -> Image.Image:
+    """Downsample a rounded mask so all four corners have smooth pixel coverage."""
+    scale = 8
+    mask = Image.new("L", (width * scale, height * scale))
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, width * scale - 1, height * scale - 1), radius=radius * scale, fill=255
+    )
+    return mask.resize((width, height), Image.Resampling.LANCZOS).filter(
+        ImageFilter.GaussianBlur(3)
+    )
+
+
+def _notice_panel_mask(width: int, height: int) -> Image.Image:
+    """Fade the rounded panel through its outer eight pixels."""
+    edge_fade = [round(255 * (step / 8) ** 2 * (3 - 2 * step / 8)) for step in range(9)]
+    horizontal = [edge_fade[min(8, x, width - 1 - x)] for x in range(width)]
+    vertical = [edge_fade[min(8, y, height - 1 - y)] for y in range(height)]
+    fade_mask = Image.new("L", (width, height))
+    fade_mask.putdata([min(horizontal[x], vertical[y]) for y in range(height) for x in range(width)])
+    return ImageChops.multiply(_notice_shape_mask(width, height), fade_mask)
+
+
 def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
     """Render a centered two-line prompt below the upper glow."""
     available_width = screen_width - 32
@@ -131,10 +153,10 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
         return None
 
     height = title_height + hint_height + 46
-    image = Image.new("RGBA", (width, height))
+    image = Image.new("RGBA", (width, height), (8, 42, 88, 0))
+    # Fade every edge from transparent to 80%; the rounded mask softens the corners too.
+    image.putalpha(_notice_panel_mask(width, height).point(lambda alpha: round(alpha * 0.8)))
     draw = ImageDraw.Draw(image)
-    # An 80%-opaque blue panel keeps the shortcut readable over desktop content.
-    draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=22, fill=(8, 42, 88, 204))
     title_y = 18 - title_box[1]
     hint_y = 28 + title_height - hint_box[1]
     draw.text(((width - title_width) // 2 - title_box[0], title_y), _NOTICE_TITLE,
@@ -157,15 +179,17 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
 def _notice_glow_bitmap(
     width: int, height: int, color: tuple[int, int, int], pad: int = _NOTICE_GLOW_PAD
 ) -> bytes:
-    """Blur only outside the prompt so its 80%-opaque background stays steady."""
+    """Anchor the aura at the solid start of the panel's outer fade."""
     size = (width + 2 * pad, height + 2 * pad)
     shape = Image.new("L", size)
-    ImageDraw.Draw(shape).rounded_rectangle(
-        (pad, pad, pad + width - 1, pad + height - 1), radius=22, fill=255
-    )
+    # The inset contour meets the panel where its eight-pixel fade begins.
+    shape.paste(_notice_shape_mask(width - 16, height - 16, 14), (pad + 8, pad + 8))
     outside = ImageChops.subtract(shape.filter(ImageFilter.GaussianBlur(min(15, pad / 2))), shape)
+    # Feather the inner cutoff as well, so the halo cannot end as a bright line.
+    outside = outside.filter(ImageFilter.GaussianBlur(3))
     aura = Image.new("RGBA", size, (*color, 0))
-    aura.putalpha(outside.point(lambda alpha: min(255, round(alpha * 1.7))))
+    peak = outside.getextrema()[1]
+    aura.putalpha(outside.point(lambda alpha: round(alpha * 211 / peak)))
     return flash_overlay._premultiplied_bgra(aura, 1.0)
 
 

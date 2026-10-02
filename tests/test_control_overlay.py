@@ -37,7 +37,27 @@ def test_notice_uses_clear_english_and_transparent_corners():
     width, height, bgra = notice
     assert 540 <= width < 1920 and height < 120  # No third line remains.
     assert len(bgra) == width * height * 4
-    assert _alpha_at(bgra, width, 0, 0) == 0
+    # A supersampled rounded mask gives each corner several partial-alpha pixels.
+    for x_start in (0, width - 22):
+        for y_start in (0, height - 22):
+            corner_alpha = {
+                _alpha_at(bgra, width, x_start + dx, y_start + dy)
+                for dx in range(22)
+                for dy in range(22)
+            }
+            assert len({alpha for alpha in corner_alpha if 0 < alpha < 204}) >= 8
+    for x in (0, width - 1):
+        for y in (0, height - 1):
+            assert _alpha_at(bgra, width, x, y) == 0
+    # Each straight side now tapers from transparent to the 80%-opaque center.
+    for edge in (
+        [_alpha_at(bgra, width, d, height // 2) for d in range(9)],
+        [_alpha_at(bgra, width, width - 1 - d, height // 2) for d in range(9)],
+        [_alpha_at(bgra, width, width // 2, d) for d in range(9)],
+        [_alpha_at(bgra, width, width // 2, height - 1 - d) for d in range(9)],
+    ):
+        assert edge[0] == 0 < edge[1] < edge[4] < edge[8] == 204
+        assert all(a <= b for a, b in zip(edge, edge[1:]))
     assert _alpha_at(bgra, width, 10, height // 2) == 204  # 204/255 is 0.8.
     assert max(bgra[3::4]) == 255  # Text stays fully legible while the glow breathes.
     assert any(bgra[offset : offset + 4] == b"\x00\x00\x00\xff" for offset in range(0, len(bgra), 4))
@@ -55,10 +75,50 @@ def test_notice_outer_glow_fades_without_changing_the_panel():
     middle_y = pad + height // 2
     assert _alpha_at(glow, glow_width, pad + width // 2, middle_y) == 0
     assert _alpha_at(glow, glow_width, 0, 0) == 0
-    assert 208 <= max(glow[3::4]) <= 212  # Twice the previous aura peak of about 105.
+    assert 208 <= max(glow[3::4]) <= 214  # Keep the accepted aura brightness after shifting it inward.
     assert _alpha_at(glow, glow_width, pad - 1, middle_y) > _alpha_at(
         glow, glow_width, pad - 15, middle_y
     ) > 0
+
+
+def test_notice_glow_meets_the_feathered_background():
+    notice = control_overlay._notice_bitmap(1920)
+    assert notice is not None
+    width, height, panel = notice
+    pad = control_overlay._NOTICE_GLOW_PAD
+    halo = control_overlay._notice_glow_bitmap(width, height, (45, 145, 255))
+    halo_width = width + 2 * pad
+    for edge in (
+        [(depth, height // 2) for depth in range(13)],
+        [(width - 1 - depth, height // 2) for depth in range(13)],
+        [(width // 2, depth) for depth in range(13)],
+        [(width // 2, height - 1 - depth) for depth in range(13)],
+    ):
+        combined = []
+        for depth, (panel_x, panel_y) in enumerate(edge):
+            panel_alpha = _alpha_at(panel, width, panel_x, panel_y)
+            halo_alpha = _alpha_at(halo, halo_width, pad + panel_x, pad + panel_y)
+            if depth < 8:
+                assert halo_alpha > 0
+            if depth == 8:
+                assert panel_alpha == 204
+                assert halo_alpha > 0  # The aura now passes the fade's start.
+            combined.append(round(panel_alpha + halo_alpha * (255 - panel_alpha) / 255))
+        assert max(abs(a - b) for a, b in zip(combined, combined[1:])) <= 15
+    for x_edge, y_edge, x_step, y_step in (
+        (0, 0, 1, 1),
+        (width - 1, 0, -1, 1),
+        (0, height - 1, 1, -1),
+        (width - 1, height - 1, -1, -1),
+    ):
+        # The rounded silhouette also needs a gradual combined transition.
+        combined = []
+        for depth in range(16):
+            x, y = x_edge + depth * x_step, y_edge + depth * y_step
+            panel_alpha = _alpha_at(panel, width, x, y)
+            halo_alpha = _alpha_at(halo, halo_width, pad + x, pad + y)
+            combined.append(round(panel_alpha + halo_alpha * (255 - panel_alpha) / 255))
+        assert max(abs(a - b) for a, b in zip(combined, combined[1:])) <= 30
 
 
 def test_breath_opacity_is_smooth_periodic_and_never_disappears():
