@@ -8,11 +8,13 @@ from contextlib import contextmanager
 import ctypes
 import logging
 import math
+import os
 import threading
 import time
 from ctypes import wintypes
+from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from windows_mcp.desktop import flash_overlay
 from windows_mcp import uia
@@ -28,6 +30,9 @@ _SW_HIDE = 0
 _WDA_EXCLUDEFROMCAPTURE = 0x00000011
 _BLUE = (45, 145, 255)
 _AMBER = (255, 170, 55)
+_NOTICE_TITLE = "AI is controlling this computer"
+_NOTICE_HINT = "Press Ctrl + Alt + Shift + Backspace to take over"
+_NOTICE_NOTE = "AI resumes after 10 seconds without your input"
 
 _user32 = ctypes.windll.user32
 _user32.GetCursorPos.argtypes = [ctypes.POINTER(flash_overlay._POINT)]
@@ -103,9 +108,54 @@ def _cursor_bitmap(color: tuple[int, int, int]) -> bytes:
     return flash_overlay._premultiplied_bgra(image, 1.0)
 
 
+def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
+    """Render a centered three-line prompt below the upper glow."""
+    available_width = screen_width - 32
+    if available_width < 200:
+        return None
+    font_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    for hint_size in range(16, 7, -1):
+        try:
+            title_font = ImageFont.truetype(str(font_dir / "seguisb.ttf"), hint_size + 5)
+            hint_font = ImageFont.truetype(str(font_dir / "segoeui.ttf"), hint_size)
+            note_font = ImageFont.truetype(str(font_dir / "segoeui.ttf"), max(8, hint_size - 2))
+        except OSError:
+            title_font = hint_font = note_font = ImageFont.load_default()
+        measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+        title_box = measure.textbbox((0, 0), _NOTICE_TITLE, font=title_font)
+        hint_box = measure.textbbox((0, 0), _NOTICE_HINT, font=hint_font)
+        note_box = measure.textbbox((0, 0), _NOTICE_NOTE, font=note_font)
+        title_width, title_height = title_box[2] - title_box[0], title_box[3] - title_box[1]
+        hint_width, hint_height = hint_box[2] - hint_box[0], hint_box[3] - hint_box[1]
+        note_width, note_height = note_box[2] - note_box[0], note_box[3] - note_box[1]
+        width = max(title_width, hint_width, note_width) + 36
+        if width <= available_width:
+            break
+    else:
+        return None
+
+    height = title_height + hint_height + note_height + 36
+    image = Image.new("RGBA", (width, height))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=14, fill=(8, 20, 38, 210))
+    title_y = 12 - title_box[1]
+    hint_y = 18 + title_height - hint_box[1]
+    note_y = 24 + title_height + hint_height - note_box[1]
+    draw.text(((width - title_width) // 2 - title_box[0], title_y), _NOTICE_TITLE,
+              font=title_font, fill=(248, 251, 255, 255))
+    draw.text(((width - hint_width) // 2 - hint_box[0], hint_y), _NOTICE_HINT,
+              font=hint_font, fill=(195, 220, 255, 255))
+    draw.text(((width - note_width) // 2 - note_box[0], note_y), _NOTICE_NOTE,
+              font=note_font, fill=(155, 188, 225, 255))
+    return width, height, flash_overlay._premultiplied_bgra(image, 1.0)
+
+
 class _Layer:
-    def __init__(self, x: int, y: int, width: int, height: int, bgra: bytes, name: str):
+    def __init__(
+        self, x: int, y: int, width: int, height: int, bgra: bytes, name: str, *, breathes: bool = True
+    ):
         self.x, self.y, self.width, self.height = x, y, width, height
+        self.breathes = breathes
         self.class_name = f"WindowsMCPControl_{name}_{id(self):x}"
         self.hwnd, self.instance = flash_overlay._create_layered_window(
             self.class_name, x, y, width, height
@@ -204,6 +254,18 @@ def _build_layers(rects: tuple[tuple[int, int, int, int], ...], pending: bool) -
             for x, y, w, h, side in strips:
                 if w and h:
                     layers.append(_Layer(x, y, w, h, _edge_bitmap(w, h, side, color), f"{index}_{side}"))
+            notice = _notice_bitmap(width)
+            if notice is not None and height > border + notice[1] + 12:
+                notice_width, notice_height, bitmap = notice
+                layers.append(_Layer(
+                    left + (width - notice_width) // 2,
+                    top + border + 12,
+                    notice_width,
+                    notice_height,
+                    bitmap,
+                    f"{index}_notice",
+                    breathes=False,
+                ))
         point = flash_overlay._POINT()
         if not _user32.GetCursorPos(ctypes.byref(point)):
             raise RuntimeError("cannot locate cursor for AI control indicator")
@@ -325,7 +387,8 @@ class _Indicator:
                     else:
                         opacity = _breath_opacity(time.monotonic() - breath_started)
                         for layer in layers:
-                            layer.set_opacity(opacity)
+                            if layer.breathes:
+                                layer.set_opacity(opacity)
                         if not pending:
                             ring.set_opacity(opacity)
                         if not visible:

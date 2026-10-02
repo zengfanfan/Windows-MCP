@@ -29,6 +29,21 @@ def _alpha_at(bgra: bytes, width: int, x: int, y: int) -> int:
     return bgra[(y * width + x) * 4 + 3]
 
 
+def test_notice_uses_clear_english_and_transparent_corners():
+    assert control_overlay._NOTICE_TITLE == "AI is controlling this computer"
+    assert control_overlay._NOTICE_HINT == "Press Ctrl + Alt + Shift + Backspace to take over"
+    assert control_overlay._NOTICE_NOTE == "AI resumes after 10 seconds without your input"
+    notice = control_overlay._notice_bitmap(1920)
+    assert notice is not None
+    width, height, bgra = notice
+    assert width < 1920 and height > 60
+    assert len(bgra) == width * height * 4
+    assert _alpha_at(bgra, width, 0, 0) == 0
+    assert max(bgra[3::4]) == 255  # Text stays fully legible while the glow breathes.
+    narrow = control_overlay._notice_bitmap(300)
+    assert narrow is not None and narrow[0] <= 268
+
+
 def test_breath_opacity_is_smooth_periodic_and_never_disappears():
     opacity = control_overlay._breath_opacity
     period = control_overlay._BREATH_PERIOD_SECONDS
@@ -133,8 +148,8 @@ def test_multimonitor_creates_narrow_clickthrough_layers(monkeypatch):
     made = []
 
     class FakeLayer:
-        def __init__(self, x, y, width, height, bgra, name):
-            made.append((x, y, width, height, name))
+        def __init__(self, x, y, width, height, bgra, name, *, breathes=True):
+            made.append((x, y, width, height, name, breathes))
 
         def close(self):
             pass
@@ -142,17 +157,25 @@ def test_multimonitor_creates_narrow_clickthrough_layers(monkeypatch):
     monkeypatch.setattr(control_overlay, "_Layer", FakeLayer)
     monkeypatch.setattr(control_overlay._user32, "GetCursorPos", lambda ptr: True)
     rects = ((-1920, 0, 0, 1080), (0, 0, 2560, 1440))
-    edges, ring = control_overlay._build_layers(rects, pending=False)
-    assert len(edges) == 8
+    layers, ring = control_overlay._build_layers(rects, pending=False)
+    assert len(layers) == 10
     assert ring is not None
     border = control_overlay._BORDER
     assert made[0][:4] == (-1920, 0, 1920, border)
     assert made[2][:4] == (-1920, border, border, 1080 - 2 * border)
     assert made[3][:4] == (-border, border, border, 1080 - 2 * border)
-    assert made[4][:4] == (0, 0, 2560, border)
-    assert made[6][:4] == (0, border, border, 1440 - 2 * border)
-    assert made[7][:4] == (2560 - border, border, border, 1440 - 2 * border)
-    assert all(w <= border or h <= border for _, _, w, h, name in made if name != "cursor")
+    assert made[4][1] == border + 12 and made[4][4:] == ("0_notice", False)
+    assert abs((made[4][0] + made[4][2] / 2) - (-1920 / 2)) <= 1
+    assert made[5][:4] == (0, 0, 2560, border)
+    assert made[7][:4] == (0, border, border, 1440 - 2 * border)
+    assert made[8][:4] == (2560 - border, border, border, 1440 - 2 * border)
+    assert made[9][1] == border + 12 and made[9][4:] == ("1_notice", False)
+    assert abs((made[9][0] + made[9][2] / 2) - 1280) <= 1
+    assert all(
+        w <= border or h <= border
+        for _, _, w, h, name, _ in made
+        if name != "cursor" and not name.endswith("notice")
+    )
 
 
 def test_layer_failure_closes_prior_windows(monkeypatch):
@@ -199,6 +222,7 @@ def test_indicator_lifecycle_and_no_restore_after_takeover(monkeypatch):
 
         def __init__(self, name):
             self.name = name
+            self.breathes = name != "notice"
 
         def set_opacity(self, value):
             events.append(("opacity", self.name, value))
@@ -219,7 +243,7 @@ def test_indicator_lifecycle_and_no_restore_after_takeover(monkeypatch):
     monkeypatch.setattr(
         control_overlay,
         "_build_layers",
-        lambda rects, pending: ([FakeLayer("edge")], FakeLayer("cursor")),
+        lambda rects, pending: ([FakeLayer("edge"), FakeLayer("notice")], FakeLayer("cursor")),
     )
     monkeypatch.setattr(control_overlay, "_breath_opacity", lambda elapsed: 177)
     monkeypatch.setattr(control_overlay._user32, "GetCursorPos", lambda ptr: True)
@@ -228,16 +252,17 @@ def test_indicator_lifecycle_and_no_restore_after_takeover(monkeypatch):
     control_overlay.start()
     assert control_overlay.is_healthy() is True
     control_overlay.set_active(True)
-    assert events.count("show") == 2
+    assert events.count("show") == 3
     assert ("opacity", "edge", 177) in events
     assert ("opacity", "cursor", 177) in events
+    assert not any(event == ("opacity", "notice", 177) for event in events)
     with control_overlay.suspend_for_capture():
-        assert events.count("hide") == 2
+        assert events.count("hide") == 3
         control_overlay.set_active(False)
-    assert events.count("show") == 2
+    assert events.count("show") == 3
     control_overlay.stop()
     assert control_overlay.is_healthy() is False
-    assert events.count("close") == 2
+    assert events.count("close") == 3
 
 
 def test_pending_indicator_never_flashes_cursor_layer(monkeypatch):
@@ -245,6 +270,7 @@ def test_pending_indicator_never_flashes_cursor_layer(monkeypatch):
 
     class FakeLayer:
         hwnd = 1
+        breathes = True
 
         def __init__(self, name):
             self.name = name
