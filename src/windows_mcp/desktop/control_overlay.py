@@ -34,7 +34,6 @@ _AMBER = (255, 170, 55)
 _NOTICE_TITLE = "AI is controlling this computer"
 _NOTICE_SHORTCUT = "Ctrl + Alt + Shift + Backspace"
 _NOTICE_HINT = f"Press {_NOTICE_SHORTCUT} to take over"
-_NOTICE_NOTE = "AI resumes after 10 seconds without your input"
 
 _user32 = ctypes.windll.user32
 _user32.GetCursorPos.argtypes = [ctypes.POINTER(flash_overlay._POINT)]
@@ -103,7 +102,7 @@ def _cursor_bitmap(color: tuple[int, int, int]) -> bytes:
 
 
 def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
-    """Render a centered three-line prompt below the upper glow."""
+    """Render a centered two-line prompt below the upper glow."""
     available_width = screen_width - 32
     if available_width < 200:
         return None
@@ -114,9 +113,8 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
         try:
             title_font = ImageFont.truetype(str(font_dir / "seguisb.ttf"), hint_size + 8)
             hint_font = ImageFont.truetype(str(font_dir / "segoeui.ttf"), hint_size)
-            note_font = ImageFont.truetype(str(font_dir / "segoeui.ttf"), max(8, hint_size - 4))
         except OSError:
-            title_font = hint_font = note_font = ImageFont.load_default()
+            title_font = hint_font = ImageFont.load_default()
         measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
         title_box = measure.textbbox((0, 0), _NOTICE_TITLE, font=title_font)
         hint_box = measure.textbbox((0, 0), _NOTICE_HINT, font=hint_font)
@@ -124,24 +122,21 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
         prefix_width = math.ceil(measure.textlength(hint_prefix, font=hint_font))
         shortcut_width = math.ceil(measure.textlength(_NOTICE_SHORTCUT, font=hint_font))
         suffix_width = math.ceil(measure.textlength(hint_suffix, font=hint_font))
-        note_box = measure.textbbox((0, 0), _NOTICE_NOTE, font=note_font)
         title_width, title_height = title_box[2] - title_box[0], title_box[3] - title_box[1]
         hint_width, hint_height = prefix_width + shortcut_width + suffix_width + 16, hint_box[3] - hint_box[1]
-        note_width, note_height = note_box[2] - note_box[0], note_box[3] - note_box[1]
-        width = max(title_width, hint_width, note_width) + 2 * horizontal_padding
+        width = max(title_width, hint_width) + 2 * horizontal_padding
         if width <= available_width:
             break
     else:
         return None
 
-    height = title_height + hint_height + note_height + 56
+    height = title_height + hint_height + 46
     image = Image.new("RGBA", (width, height))
     draw = ImageDraw.Draw(image)
-    # A 90%-opaque blue panel stays readable over light or busy desktop content.
-    draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=22, fill=(8, 42, 88, 230))
+    # An 80%-opaque blue panel keeps the shortcut readable over desktop content.
+    draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=22, fill=(8, 42, 88, 204))
     title_y = 18 - title_box[1]
     hint_y = 28 + title_height - hint_box[1]
-    note_y = 38 + title_height + hint_height - note_box[1]
     draw.text(((width - title_width) // 2 - title_box[0], title_y), _NOTICE_TITLE,
               font=title_font, fill=(248, 251, 255, 255))
     hint_x = (width - hint_width) // 2
@@ -156,15 +151,13 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
     draw.text((badge_left + 8, hint_y), _NOTICE_SHORTCUT, font=hint_font, fill=(255, 255, 255, 255))
     draw.text((badge_left + shortcut_width + 16, hint_y), hint_suffix,
               font=hint_font, fill=(225, 240, 255, 255))
-    draw.text(((width - note_width) // 2 - note_box[0], note_y), _NOTICE_NOTE,
-              font=note_font, fill=(202, 225, 250, 255))
     return width, height, flash_overlay._premultiplied_bgra(image, 1.0)
 
 
 def _notice_glow_bitmap(
     width: int, height: int, color: tuple[int, int, int], pad: int = _NOTICE_GLOW_PAD
 ) -> bytes:
-    """Blur only outside the prompt so its 90%-opaque background stays steady."""
+    """Blur only outside the prompt so its 80%-opaque background stays steady."""
     size = (width + 2 * pad, height + 2 * pad)
     shape = Image.new("L", size)
     ImageDraw.Draw(shape).rounded_rectangle(

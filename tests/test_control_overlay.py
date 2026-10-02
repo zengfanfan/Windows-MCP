@@ -32,14 +32,13 @@ def test_notice_uses_clear_english_and_transparent_corners():
     assert control_overlay._NOTICE_TITLE == "AI is controlling this computer"
     assert control_overlay._NOTICE_HINT == "Press Ctrl + Alt + Shift + Backspace to take over"
     assert control_overlay._NOTICE_SHORTCUT == "Ctrl + Alt + Shift + Backspace"
-    assert control_overlay._NOTICE_NOTE == "AI resumes after 10 seconds without your input"
     notice = control_overlay._notice_bitmap(1920)
     assert notice is not None
     width, height, bgra = notice
-    assert 540 <= width < 1920 and height >= 120  # Full-sized type on an ordinary monitor.
+    assert 540 <= width < 1920 and height < 120  # No third line remains.
     assert len(bgra) == width * height * 4
     assert _alpha_at(bgra, width, 0, 0) == 0
-    assert _alpha_at(bgra, width, 10, height // 2) == 230  # 230/255 is 0.9 rounded.
+    assert _alpha_at(bgra, width, 10, height // 2) == 204  # 204/255 is 0.8.
     assert max(bgra[3::4]) == 255  # Text stays fully legible while the glow breathes.
     assert any(bgra[offset : offset + 4] == b"\x00\x00\x00\xff" for offset in range(0, len(bgra), 4))
     narrow = control_overlay._notice_bitmap(300)
