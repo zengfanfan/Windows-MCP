@@ -1,6 +1,5 @@
 """Indicator geometry, lifecycle, and screenshot exclusion checks."""
 
-import math
 import threading
 import time
 from contextlib import contextmanager
@@ -39,10 +38,25 @@ def test_notice_uses_clear_english_and_transparent_corners():
     assert 540 <= width < 1920 and height >= 120  # Full-sized type on an ordinary monitor.
     assert len(bgra) == width * height * 4
     assert _alpha_at(bgra, width, 0, 0) == 0
-    assert _alpha_at(bgra, width, 10, height // 2) >= 240  # The panel stays clear on bright desktops.
+    assert _alpha_at(bgra, width, 10, height // 2) == 230  # 230/255 is 0.9 rounded.
     assert max(bgra[3::4]) == 255  # Text stays fully legible while the glow breathes.
     narrow = control_overlay._notice_bitmap(300)
     assert narrow is not None and narrow[0] <= 268
+
+
+def test_notice_outer_glow_fades_without_changing_the_panel():
+    width, height = 400, 100
+    pad = control_overlay._NOTICE_GLOW_PAD
+    glow = control_overlay._notice_glow_bitmap(width, height, (45, 145, 255))
+    glow_width = width + 2 * pad
+    _assert_premultiplied(glow)
+    assert len(glow) == glow_width * (height + 2 * pad) * 4
+    middle_y = pad + height // 2
+    assert _alpha_at(glow, glow_width, pad + width // 2, middle_y) == 0
+    assert _alpha_at(glow, glow_width, 0, 0) == 0
+    assert _alpha_at(glow, glow_width, pad - 1, middle_y) > _alpha_at(
+        glow, glow_width, pad - 15, middle_y
+    ) > 0
 
 
 def test_breath_opacity_is_smooth_periodic_and_never_disappears():
@@ -101,19 +115,11 @@ def test_edge_and_cursor_have_soft_glow_without_a_solid_contour():
         )
         if side in ("right", "bottom"):
             alphas.reverse()
-        assert alphas[0] == 0 < alphas[5]  # No edge pixel that can form a solid rim.
-        assert alphas[-1] == 0 < alphas[10]
-        tail = alphas[-16:]
-        assert all(a >= b for a, b in zip(tail, tail[1:]))
-        assert max(a - b for a, b in zip(tail, tail[1:])) <= 6
-        assert alphas[40] >= 40 and 10 <= alphas[48] <= 16 and alphas[52] <= 3
-        assert 100 <= max(alphas) < 130  # Roughly twice the prior glow peak.
-        assert alphas[20] > 90 and alphas[40] > 30  # Light reaches farther inward.
-        assert max(abs(a - b) for a, b in zip(alphas, alphas[1:])) < 30
-        for old_depth in (1, 2, 5, 10, 20):
-            # Away from the new inner taper, opacity is twice the old curve.
-            old_alpha = round(160 * (1 - math.exp(-old_depth / 5.5)) * math.exp(-old_depth / 10))
-            assert abs(alphas[2 * old_depth] - 2 * old_alpha) <= 1
+        assert alphas[0] == max(alphas) == 120  # The display edge is the brightest point.
+        assert alphas[-1] == 0
+        assert all(a >= b for a, b in zip(alphas, alphas[1:]))
+        assert max(a - b for a, b in zip(alphas, alphas[1:])) <= 4
+        assert 15 <= alphas[40] <= 25  # The glow remains broad but fades inward.
 
     glow = control_overlay._cursor_bitmap((45, 145, 255))
     width = control_overlay._CURSOR_SIZE
@@ -133,6 +139,8 @@ def test_corner_glow_joins_edges_without_double_opacity():
     top = control_overlay._edge_bitmap(width, border, "top", (45, 145, 255))
     bottom = control_overlay._edge_bitmap(width, border, "bottom", (45, 145, 255))
     left = control_overlay._edge_bitmap(border, border, "left", (45, 145, 255))
+    assert _alpha_at(top, width, 0, 0) == control_overlay._glow_alpha(0)
+    assert _alpha_at(top, width, width - 1, 0) == control_overlay._glow_alpha(0)
     for horizontal in (top, bottom):
         for x_depth in (1, 5, 10, 20, 40, 55):
             side_alpha = _alpha_at(left, border, x_depth, border // 2)
@@ -159,24 +167,48 @@ def test_multimonitor_creates_narrow_clickthrough_layers(monkeypatch):
     monkeypatch.setattr(control_overlay._user32, "GetCursorPos", lambda ptr: True)
     rects = ((-1920, 0, 0, 1080), (0, 0, 2560, 1440))
     layers, ring = control_overlay._build_layers(rects, pending=False)
-    assert len(layers) == 10
+    assert len(layers) == 12
     assert ring is not None
     border = control_overlay._BORDER
     assert made[0][:4] == (-1920, 0, 1920, border)
     assert made[2][:4] == (-1920, border, border, 1080 - 2 * border)
     assert made[3][:4] == (-border, border, border, 1080 - 2 * border)
-    assert made[4][1] == border + 12 and made[4][4:] == ("0_notice", False)
-    assert abs((made[4][0] + made[4][2] / 2) - (-1920 / 2)) <= 1
-    assert made[5][:4] == (0, 0, 2560, border)
-    assert made[7][:4] == (0, border, border, 1440 - 2 * border)
-    assert made[8][:4] == (2560 - border, border, border, 1440 - 2 * border)
-    assert made[9][1] == border + 12 and made[9][4:] == ("1_notice", False)
-    assert abs((made[9][0] + made[9][2] / 2) - 1280) <= 1
+    assert made[4][1] == border and made[4][4:] == ("0_notice_glow", True)
+    assert made[5][1] == border + control_overlay._NOTICE_GLOW_PAD
+    assert made[5][4:] == ("0_notice", False)
+    assert made[4][0] == made[5][0] - control_overlay._NOTICE_GLOW_PAD
+    assert abs((made[5][0] + made[5][2] / 2) - (-1920 / 2)) <= 1
+    assert made[6][:4] == (0, 0, 2560, border)
+    assert made[8][:4] == (0, border, border, 1440 - 2 * border)
+    assert made[9][:4] == (2560 - border, border, border, 1440 - 2 * border)
+    assert made[10][1] == border and made[10][4:] == ("1_notice_glow", True)
+    assert made[11][1] == border + control_overlay._NOTICE_GLOW_PAD
+    assert made[11][4:] == ("1_notice", False)
+    assert abs((made[11][0] + made[11][2] / 2) - 1280) <= 1
     assert all(
         w <= border or h <= border
         for _, _, w, h, name, _ in made
-        if name != "cursor" and not name.endswith("notice")
+        if name != "cursor" and not name.endswith(("notice", "notice_glow"))
     )
+
+
+@pytest.mark.parametrize("width", [300, 400])
+def test_notice_glow_stays_on_its_monitor_when_narrow(monkeypatch, width):
+    made = []
+
+    class FakeLayer:
+        def __init__(self, x, y, layer_width, height, bgra, name, *, breathes=True):
+            made.append((x, y, layer_width, height, name))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(control_overlay, "_Layer", FakeLayer)
+    monkeypatch.setattr(control_overlay._user32, "GetCursorPos", lambda ptr: True)
+    control_overlay._build_layers(((100, 0, 100 + width, 300),), pending=False)
+    glow = next(layer for layer in made if layer[4] == "0_notice_glow")
+    assert 100 <= glow[0]
+    assert glow[0] + glow[2] <= 100 + width
 
 
 def test_layer_failure_closes_prior_windows(monkeypatch):
@@ -244,7 +276,10 @@ def test_indicator_lifecycle_and_no_restore_after_takeover(monkeypatch):
     monkeypatch.setattr(
         control_overlay,
         "_build_layers",
-        lambda rects, pending: ([FakeLayer("edge"), FakeLayer("notice")], FakeLayer("cursor")),
+        lambda rects, pending: (
+            [FakeLayer("edge"), FakeLayer("notice_glow"), FakeLayer("notice")],
+            FakeLayer("cursor"),
+        ),
     )
     monkeypatch.setattr(control_overlay, "_breath_opacity", lambda elapsed: 177)
     monkeypatch.setattr(control_overlay._user32, "GetCursorPos", lambda ptr: True)
@@ -253,17 +288,18 @@ def test_indicator_lifecycle_and_no_restore_after_takeover(monkeypatch):
     control_overlay.start()
     assert control_overlay.is_healthy() is True
     control_overlay.set_active(True)
-    assert events.count("show") == 3
+    assert events.count("show") == 4
     assert ("opacity", "edge", 177) in events
+    assert ("opacity", "notice_glow", 177) in events
     assert ("opacity", "cursor", 177) in events
     assert not any(event == ("opacity", "notice", 177) for event in events)
     with control_overlay.suspend_for_capture():
-        assert events.count("hide") == 3
+        assert events.count("hide") == 4
         control_overlay.set_active(False)
-    assert events.count("show") == 3
+    assert events.count("show") == 4
     control_overlay.stop()
     assert control_overlay.is_healthy() is False
-    assert events.count("close") == 3
+    assert events.count("close") == 4
 
 
 def test_pending_indicator_never_flashes_cursor_layer(monkeypatch):

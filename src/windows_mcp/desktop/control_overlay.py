@@ -14,7 +14,7 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from windows_mcp.desktop import flash_overlay
 from windows_mcp import uia
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _BORDER = 56
 _CURSOR_SIZE = 88
+_NOTICE_GLOW_PAD = 32
 _REFRESH_SECONDS = 0.05
 _BREATH_PERIOD_SECONDS = 3.0
 _BREATH_MIN_ALPHA = 140
@@ -50,17 +51,10 @@ def _breath_opacity(elapsed: float) -> int:
 
 
 def _glow_alpha(depth: int, extent: int = _BORDER) -> int:
-    """Return a glow that reaches zero at both edges of its strip."""
+    """Peak at the screen edge and fade continuously to transparency inward."""
     if depth >= extent - 1:
         return 0
-    alpha = 320 * (1 - math.exp(-depth / 11)) * math.exp(-depth / 20)
-    # The exponential still has visible opacity at the inner strip boundary.
-    # Ease out over its last 16 pixels instead of cutting that opacity off.
-    fade_start = max(0, extent - 16)
-    if depth > fade_start:
-        remaining = (extent - 1 - depth) / (extent - 1 - fade_start)
-        alpha *= remaining * remaining * (3 - 2 * remaining)
-    return round(alpha)
+    return round(120 * (1 - depth / (extent - 1)) ** 1.4)
 
 
 def _edge_bitmap(width: int, height: int, side: str, color: tuple[int, int, int]) -> bytes:
@@ -70,8 +64,7 @@ def _edge_bitmap(width: int, height: int, side: str, color: tuple[int, int, int]
     extent = min(_BORDER, height if side in ("top", "bottom") else width)
     corner_width = min(extent, width // 2)
     for depth in range(extent):
-        # Ramp up over the first few pixels, then fade inward. A high-opacity
-        # first row looked like a solid border rather than emitted light.
+        # Let the gradient itself reach the edge; do not draw a separate outline.
         alpha = _glow_alpha(depth, extent)
         if side in ("top", "bottom"):
             y = depth if side == "top" else height - 1 - depth
@@ -139,8 +132,8 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
     height = title_height + hint_height + note_height + 56
     image = Image.new("RGBA", (width, height))
     draw = ImageDraw.Draw(image)
-    # The opaque blue panel remains readable over light or busy desktop content.
-    draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=22, fill=(8, 42, 88, 245))
+    # A 90%-opaque blue panel stays readable over light or busy desktop content.
+    draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=22, fill=(8, 42, 88, 230))
     title_y = 18 - title_box[1]
     hint_y = 28 + title_height - hint_box[1]
     note_y = 38 + title_height + hint_height - note_box[1]
@@ -151,6 +144,21 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
     draw.text(((width - note_width) // 2 - note_box[0], note_y), _NOTICE_NOTE,
               font=note_font, fill=(202, 225, 250, 255))
     return width, height, flash_overlay._premultiplied_bgra(image, 1.0)
+
+
+def _notice_glow_bitmap(
+    width: int, height: int, color: tuple[int, int, int], pad: int = _NOTICE_GLOW_PAD
+) -> bytes:
+    """Blur only outside the prompt so its 90%-opaque background stays steady."""
+    size = (width + 2 * pad, height + 2 * pad)
+    shape = Image.new("L", size)
+    ImageDraw.Draw(shape).rounded_rectangle(
+        (pad, pad, pad + width - 1, pad + height - 1), radius=22, fill=255
+    )
+    outside = ImageChops.subtract(shape.filter(ImageFilter.GaussianBlur(min(15, pad / 2))), shape)
+    aura = Image.new("RGBA", size, (*color, 0))
+    aura.putalpha(outside.point(lambda alpha: round(alpha * 0.85)))
+    return flash_overlay._premultiplied_bgra(aura, 1.0)
 
 
 class _Layer:
@@ -258,11 +266,25 @@ def _build_layers(rects: tuple[tuple[int, int, int, int], ...], pending: bool) -
                 if w and h:
                     layers.append(_Layer(x, y, w, h, _edge_bitmap(w, h, side, color), f"{index}_{side}"))
             notice = _notice_bitmap(width)
-            if notice is not None and height > border + notice[1] + 12:
+            if notice is not None:
                 notice_width, notice_height, bitmap = notice
+                # Narrow monitors retain the aura without letting its window spill onto a neighbor.
+                glow_pad = min(_NOTICE_GLOW_PAD, (width - notice_width) // 2)
+                if height <= border + notice_height + 2 * glow_pad:
+                    continue
+                notice_x = left + (width - notice_width) // 2
+                notice_y = top + border + glow_pad
                 layers.append(_Layer(
-                    left + (width - notice_width) // 2,
-                    top + border + 12,
+                    notice_x - glow_pad,
+                    notice_y - glow_pad,
+                    notice_width + 2 * glow_pad,
+                    notice_height + 2 * glow_pad,
+                    _notice_glow_bitmap(notice_width, notice_height, color, glow_pad),
+                    f"{index}_notice_glow",
+                ))
+                layers.append(_Layer(
+                    notice_x,
+                    notice_y,
                     notice_width,
                     notice_height,
                     bitmap,
