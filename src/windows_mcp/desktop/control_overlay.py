@@ -32,7 +32,8 @@ _WDA_EXCLUDEFROMCAPTURE = 0x00000011
 _BLUE = (45, 145, 255)
 _AMBER = (255, 170, 55)
 _NOTICE_TITLE = "AI is controlling this computer"
-_NOTICE_HINT = "Press Ctrl + Alt + Shift + Backspace to take over"
+_NOTICE_SHORTCUT = "Ctrl + Alt + Shift + Backspace"
+_NOTICE_HINT = f"Press {_NOTICE_SHORTCUT} to take over"
 _NOTICE_NOTE = "AI resumes after 10 seconds without your input"
 
 _user32 = ctypes.windll.user32
@@ -54,7 +55,7 @@ def _glow_alpha(depth: int, extent: int = _BORDER) -> int:
     """Peak at the screen edge and fade continuously to transparency inward."""
     if depth >= extent - 1:
         return 0
-    return round(120 * (1 - depth / (extent - 1)) ** 1.4)
+    return round(240 * (1 - depth / (extent - 1)) ** 1.4)
 
 
 def _edge_bitmap(width: int, height: int, side: str, color: tuple[int, int, int]) -> bytes:
@@ -94,7 +95,7 @@ def _cursor_bitmap(color: tuple[int, int, int]) -> bytes:
             clear_center = 1 - math.exp(-0.5 * (max(0.0, radius - 1) / 5) ** 2)
             outer_glow = math.exp(-0.5 * (radius / 20) ** 2)
             edge_fade = min(1.0, max(0.0, (half - radius) / 8))
-            alpha = round(115 * clear_center * outer_glow * edge_fade)
+            alpha = round(230 * clear_center * outer_glow * edge_fade)
             pixels.append((*color, alpha))
     image = Image.new("RGBA", (_CURSOR_SIZE, _CURSOR_SIZE))
     image.putdata(pixels)
@@ -119,9 +120,13 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
         measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
         title_box = measure.textbbox((0, 0), _NOTICE_TITLE, font=title_font)
         hint_box = measure.textbbox((0, 0), _NOTICE_HINT, font=hint_font)
+        hint_prefix, _, hint_suffix = _NOTICE_HINT.partition(_NOTICE_SHORTCUT)
+        prefix_width = math.ceil(measure.textlength(hint_prefix, font=hint_font))
+        shortcut_width = math.ceil(measure.textlength(_NOTICE_SHORTCUT, font=hint_font))
+        suffix_width = math.ceil(measure.textlength(hint_suffix, font=hint_font))
         note_box = measure.textbbox((0, 0), _NOTICE_NOTE, font=note_font)
         title_width, title_height = title_box[2] - title_box[0], title_box[3] - title_box[1]
-        hint_width, hint_height = hint_box[2] - hint_box[0], hint_box[3] - hint_box[1]
+        hint_width, hint_height = prefix_width + shortcut_width + suffix_width + 16, hint_box[3] - hint_box[1]
         note_width, note_height = note_box[2] - note_box[0], note_box[3] - note_box[1]
         width = max(title_width, hint_width, note_width) + 2 * horizontal_padding
         if width <= available_width:
@@ -139,7 +144,17 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
     note_y = 38 + title_height + hint_height - note_box[1]
     draw.text(((width - title_width) // 2 - title_box[0], title_y), _NOTICE_TITLE,
               font=title_font, fill=(248, 251, 255, 255))
-    draw.text(((width - hint_width) // 2 - hint_box[0], hint_y), _NOTICE_HINT,
+    hint_x = (width - hint_width) // 2
+    badge_left = hint_x + prefix_width
+    # A solid black key label separates the takeover shortcut from its sentence.
+    draw.rounded_rectangle(
+        (badge_left, 24 + title_height, badge_left + shortcut_width + 15,
+         31 + title_height + hint_height),
+        radius=6, fill=(0, 0, 0, 255),
+    )
+    draw.text((hint_x, hint_y), hint_prefix, font=hint_font, fill=(225, 240, 255, 255))
+    draw.text((badge_left + 8, hint_y), _NOTICE_SHORTCUT, font=hint_font, fill=(255, 255, 255, 255))
+    draw.text((badge_left + shortcut_width + 16, hint_y), hint_suffix,
               font=hint_font, fill=(225, 240, 255, 255))
     draw.text(((width - note_width) // 2 - note_box[0], note_y), _NOTICE_NOTE,
               font=note_font, fill=(202, 225, 250, 255))
@@ -157,7 +172,7 @@ def _notice_glow_bitmap(
     )
     outside = ImageChops.subtract(shape.filter(ImageFilter.GaussianBlur(min(15, pad / 2))), shape)
     aura = Image.new("RGBA", size, (*color, 0))
-    aura.putalpha(outside.point(lambda alpha: round(alpha * 0.85)))
+    aura.putalpha(outside.point(lambda alpha: min(255, round(alpha * 1.7))))
     return flash_overlay._premultiplied_bgra(aura, 1.0)
 
 

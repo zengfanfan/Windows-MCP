@@ -31,6 +31,7 @@ def _alpha_at(bgra: bytes, width: int, x: int, y: int) -> int:
 def test_notice_uses_clear_english_and_transparent_corners():
     assert control_overlay._NOTICE_TITLE == "AI is controlling this computer"
     assert control_overlay._NOTICE_HINT == "Press Ctrl + Alt + Shift + Backspace to take over"
+    assert control_overlay._NOTICE_SHORTCUT == "Ctrl + Alt + Shift + Backspace"
     assert control_overlay._NOTICE_NOTE == "AI resumes after 10 seconds without your input"
     notice = control_overlay._notice_bitmap(1920)
     assert notice is not None
@@ -40,6 +41,7 @@ def test_notice_uses_clear_english_and_transparent_corners():
     assert _alpha_at(bgra, width, 0, 0) == 0
     assert _alpha_at(bgra, width, 10, height // 2) == 230  # 230/255 is 0.9 rounded.
     assert max(bgra[3::4]) == 255  # Text stays fully legible while the glow breathes.
+    assert any(bgra[offset : offset + 4] == b"\x00\x00\x00\xff" for offset in range(0, len(bgra), 4))
     narrow = control_overlay._notice_bitmap(300)
     assert narrow is not None and narrow[0] <= 268
 
@@ -54,6 +56,7 @@ def test_notice_outer_glow_fades_without_changing_the_panel():
     middle_y = pad + height // 2
     assert _alpha_at(glow, glow_width, pad + width // 2, middle_y) == 0
     assert _alpha_at(glow, glow_width, 0, 0) == 0
+    assert 208 <= max(glow[3::4]) <= 212  # Twice the previous aura peak of about 105.
     assert _alpha_at(glow, glow_width, pad - 1, middle_y) > _alpha_at(
         glow, glow_width, pad - 15, middle_y
     ) > 0
@@ -115,11 +118,11 @@ def test_edge_and_cursor_have_soft_glow_without_a_solid_contour():
         )
         if side in ("right", "bottom"):
             alphas.reverse()
-        assert alphas[0] == max(alphas) == 120  # The display edge is the brightest point.
+        assert alphas[0] == max(alphas) == 240  # Twice the previous edge opacity.
         assert alphas[-1] == 0
         assert all(a >= b for a, b in zip(alphas, alphas[1:]))
-        assert max(a - b for a, b in zip(alphas, alphas[1:])) <= 4
-        assert 15 <= alphas[40] <= 25  # The glow remains broad but fades inward.
+        assert max(a - b for a, b in zip(alphas, alphas[1:])) <= 8
+        assert 30 <= alphas[40] <= 50  # The glow remains broad but fades inward.
 
     glow = control_overlay._cursor_bitmap((45, 145, 255))
     width = control_overlay._CURSOR_SIZE
@@ -130,7 +133,8 @@ def test_edge_and_cursor_have_soft_glow_without_a_solid_contour():
     assert alphas[0] == 0 < alphas[10]  # Cursor center is fully transparent.
     assert alphas[10] > alphas[25] > alphas[-1]
     assert alphas[-1] == 0
-    assert max(abs(a - b) for a, b in zip(alphas, alphas[1:])) < 20
+    assert max(alphas) == 176  # Twice the previous cursor glow peak of 88.
+    assert max(abs(a - b) for a, b in zip(alphas, alphas[1:])) < 30
 
 
 def test_corner_glow_joins_edges_without_double_opacity():
