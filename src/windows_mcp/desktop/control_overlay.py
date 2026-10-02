@@ -7,18 +7,19 @@ and wait for an acknowledgement, so a screenshot cannot race a visible frame.
 from contextlib import contextmanager
 import ctypes
 import logging
+import math
 import threading
 import time
 from ctypes import wintypes
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 from windows_mcp.desktop import flash_overlay
 from windows_mcp import uia
 
 logger = logging.getLogger(__name__)
 
-_BORDER = 28
+_BORDER = 56
 _CURSOR_SIZE = 88
 _REFRESH_SECONDS = 0.05
 _SW_HIDE = 0
@@ -35,17 +36,40 @@ _user32.IsWindowVisible.argtypes = [wintypes.HWND]
 _user32.IsWindowVisible.restype = wintypes.BOOL
 
 
+def _glow_alpha(depth: int, extent: int = _BORDER) -> int:
+    """Return a glow that reaches zero at both edges of its strip."""
+    if depth >= extent - 1:
+        return 0
+    alpha = 320 * (1 - math.exp(-depth / 11)) * math.exp(-depth / 20)
+    # The exponential still has visible opacity at the inner strip boundary.
+    # Ease out over its last 16 pixels instead of cutting that opacity off.
+    fade_start = max(0, extent - 16)
+    if depth > fade_start:
+        remaining = (extent - 1 - depth) / (extent - 1 - fade_start)
+        alpha *= remaining * remaining * (3 - 2 * remaining)
+    return round(alpha)
+
+
 def _edge_bitmap(width: int, height: int, side: str, color: tuple[int, int, int]) -> bytes:
-    """Pre-render one inward gradient strip; cost scales with perimeter."""
+    """Pre-render feathered edges, joining corners at one glow strength."""
     image = Image.new("RGBA", (width, height))
     draw = ImageDraw.Draw(image)
-    for depth in range(min(_BORDER, height if side in ("top", "bottom") else width)):
-        alpha = int(190 * (1 - depth / _BORDER) ** 2)
-        if side == "top":
-            draw.line((0, depth, width - 1, depth), fill=(*color, alpha))
-        elif side == "bottom":
-            y = height - 1 - depth
+    extent = min(_BORDER, height if side in ("top", "bottom") else width)
+    corner_width = min(extent, width // 2)
+    for depth in range(extent):
+        # Ramp up over the first few pixels, then fade inward. A high-opacity
+        # first row looked like a solid border rather than emitted light.
+        alpha = _glow_alpha(depth, extent)
+        if side in ("top", "bottom"):
+            y = depth if side == "top" else height - 1 - depth
             draw.line((0, y, width - 1, y), fill=(*color, alpha))
+            # The side strips start below/above these corner squares. Use the
+            # nearest screen edge as the depth, matching the straight strips
+            # without blending two windows or drawing a diagonal bright seam.
+            for side_depth in range(corner_width):
+                corner_alpha = _glow_alpha(min(depth, side_depth), extent)
+                draw.point((side_depth, y), fill=(*color, corner_alpha))
+                draw.point((width - 1 - side_depth, y), fill=(*color, corner_alpha))
         elif side == "left":
             draw.line((depth, 0, depth, height - 1), fill=(*color, alpha))
         else:
@@ -55,13 +79,20 @@ def _edge_bitmap(width: int, height: int, side: str, color: tuple[int, int, int]
 
 
 def _cursor_bitmap(color: tuple[int, int, int]) -> bytes:
+    """Build a broad cursor aura with no drawn ellipse or sharp contour."""
+    half = (_CURSOR_SIZE - 1) / 2
+    pixels = []
+    for y in range(_CURSOR_SIZE):
+        for x in range(_CURSOR_SIZE):
+            radius = math.hypot(x - half, y - half)
+            clear_center = 1 - math.exp(-0.5 * (max(0.0, radius - 1) / 5) ** 2)
+            outer_glow = math.exp(-0.5 * (radius / 20) ** 2)
+            edge_fade = min(1.0, max(0.0, (half - radius) / 8))
+            alpha = round(115 * clear_center * outer_glow * edge_fade)
+            pixels.append((*color, alpha))
     image = Image.new("RGBA", (_CURSOR_SIZE, _CURSOR_SIZE))
-    draw = ImageDraw.Draw(image)
-    inset = 17
-    box = (inset, inset, _CURSOR_SIZE - inset - 1, _CURSOR_SIZE - inset - 1)
-    draw.ellipse(box, outline=(*color, 210), width=5)
-    glow = image.filter(ImageFilter.GaussianBlur(9))
-    return flash_overlay._premultiplied_bgra(Image.alpha_composite(glow, image), 1.0)
+    image.putdata(pixels)
+    return flash_overlay._premultiplied_bgra(image, 1.0)
 
 
 class _Layer:
@@ -144,6 +175,8 @@ def _build_layers(rects: tuple[tuple[int, int, int, int], ...], pending: bool) -
             strips = (
                 (left, top, width, border, "top"),
                 (left, bottom - border, width, border, "bottom"),
+                # The horizontal bitmaps include corner glow, leaving these
+                # vertical strips separate so corners are not blended twice.
                 (left, top + border, border, height - 2 * border, "left"),
                 (right - border, top + border, border, height - 2 * border, "right"),
             )

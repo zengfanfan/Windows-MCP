@@ -261,6 +261,12 @@ class TestIntensityCurve:
 
 
 class TestPremultipliedBgra:
+    def test_full_intensity_clears_color_when_alpha_is_zero(self):
+        from PIL import Image
+
+        img = Image.new("RGBA", (1, 1), (45, 145, 255, 0))
+        assert flash_overlay._premultiplied_bgra(img, 1.0) == bytes((0, 0, 0, 0))
+
     def test_full_intensity_premultiplies_color_by_alpha(self):
         from PIL import Image
 

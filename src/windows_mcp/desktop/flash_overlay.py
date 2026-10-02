@@ -351,6 +351,11 @@ def _premultiplied_bgra(rgba_image, intensity: float) -> bytes:
         for i in range(0, len(bgra), 4):
             a = bgra[i + 3]
             if a == 0:
+                # Layered windows require premultiplied RGB to be zero when
+                # alpha is zero; otherwise an invisible pixel can leave a rim.
+                bgra[i] = 0
+                bgra[i + 1] = 0
+                bgra[i + 2] = 0
                 continue
             bgra[i] = (bgra[i] * a) // 255
             bgra[i + 1] = (bgra[i + 1] * a) // 255

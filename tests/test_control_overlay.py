@@ -1,5 +1,6 @@
 """Indicator geometry, lifecycle, and screenshot exclusion checks."""
 
+import math
 import threading
 import time
 from contextlib import contextmanager
@@ -18,13 +19,74 @@ def _stop_indicator():
     control_overlay.stop()
 
 
-def test_edge_and_cursor_are_translucent():
-    edge = control_overlay._edge_bitmap(20, 28, "left", (45, 145, 255))
-    assert len(edge) == 20 * 28 * 4
-    assert edge[3] > edge[-1]
-    ring = control_overlay._cursor_bitmap((45, 145, 255))
-    assert len(ring) == control_overlay._CURSOR_SIZE**2 * 4
-    assert ring[3] == 0  # no opaque square over the desktop
+def _assert_premultiplied(bgra: bytes) -> None:
+    for offset in range(0, len(bgra), 4):
+        blue, green, red, alpha = bgra[offset : offset + 4]
+        assert blue <= alpha and green <= alpha and red <= alpha
+
+
+def _alpha_at(bgra: bytes, width: int, x: int, y: int) -> int:
+    return bgra[(y * width + x) * 4 + 3]
+
+
+def test_edge_and_cursor_have_soft_glow_without_a_solid_contour():
+    size = control_overlay._BORDER
+    assert size == 56  # The requested doubling of the former 28-pixel glow.
+    for side in ("left", "right", "top", "bottom"):
+        width = size * 3 if side in ("top", "bottom") else size
+        height = size if side in ("top", "bottom") else size * 3
+        edge = control_overlay._edge_bitmap(width, height, side, (45, 145, 255))
+        assert len(edge) == width * height * 4
+        _assert_premultiplied(edge)
+        alphas = (
+            [_alpha_at(edge, width, x, height // 2) for x in range(width)]
+            if side in ("left", "right")
+            else [_alpha_at(edge, width, width // 2, y) for y in range(height)]
+        )
+        if side in ("right", "bottom"):
+            alphas.reverse()
+        assert alphas[0] == 0 < alphas[5]  # No edge pixel that can form a solid rim.
+        assert alphas[-1] == 0 < alphas[10]
+        tail = alphas[-16:]
+        assert all(a >= b for a, b in zip(tail, tail[1:]))
+        assert max(a - b for a, b in zip(tail, tail[1:])) <= 6
+        assert alphas[40] >= 40 and 10 <= alphas[48] <= 16 and alphas[52] <= 3
+        assert 100 <= max(alphas) < 130  # Roughly twice the prior glow peak.
+        assert alphas[20] > 90 and alphas[40] > 30  # Light reaches farther inward.
+        assert max(abs(a - b) for a, b in zip(alphas, alphas[1:])) < 30
+        for old_depth in (1, 2, 5, 10, 20):
+            # Away from the new inner taper, opacity is twice the old curve.
+            old_alpha = round(160 * (1 - math.exp(-old_depth / 5.5)) * math.exp(-old_depth / 10))
+            assert abs(alphas[2 * old_depth] - 2 * old_alpha) <= 1
+
+    glow = control_overlay._cursor_bitmap((45, 145, 255))
+    width = control_overlay._CURSOR_SIZE
+    assert len(glow) == width**2 * 4
+    _assert_premultiplied(glow)
+    alphas = [glow[((width // 2) * width + x) * 4 + 3] for x in range(width // 2, width)]
+    assert glow[3] == 0  # Transparent square corners.
+    assert alphas[0] == 0 < alphas[10]  # Cursor center is fully transparent.
+    assert alphas[10] > alphas[25] > alphas[-1]
+    assert alphas[-1] == 0
+    assert max(abs(a - b) for a, b in zip(alphas, alphas[1:])) < 20
+
+
+def test_corner_glow_joins_edges_without_double_opacity():
+    border = control_overlay._BORDER
+    width = border * 4
+    top = control_overlay._edge_bitmap(width, border, "top", (45, 145, 255))
+    bottom = control_overlay._edge_bitmap(width, border, "bottom", (45, 145, 255))
+    left = control_overlay._edge_bitmap(border, border, "left", (45, 145, 255))
+    for horizontal in (top, bottom):
+        for x_depth in (1, 5, 10, 20, 40, 55):
+            side_alpha = _alpha_at(left, border, x_depth, border // 2)
+            for y_depth in (1, 5, 10, 20, 40, 55):
+                y = y_depth if horizontal is top else border - 1 - y_depth
+                straight_alpha = _alpha_at(horizontal, width, width // 2, y)
+                expected = control_overlay._glow_alpha(min(x_depth, y_depth))
+                assert expected <= max(side_alpha, straight_alpha)
+                assert _alpha_at(horizontal, width, x_depth, y) == expected
+                assert _alpha_at(horizontal, width, width - 1 - x_depth, y) == expected
 
 
 def test_multimonitor_creates_narrow_clickthrough_layers(monkeypatch):
@@ -43,9 +105,14 @@ def test_multimonitor_creates_narrow_clickthrough_layers(monkeypatch):
     edges, ring = control_overlay._build_layers(rects, pending=False)
     assert len(edges) == 8
     assert ring is not None
-    assert made[0][:4] == (-1920, 0, 1920, 28)
-    assert made[4][:4] == (0, 0, 2560, 28)
-    assert all(w <= 28 or h <= 28 for _, _, w, h, name in made if name != "cursor")
+    border = control_overlay._BORDER
+    assert made[0][:4] == (-1920, 0, 1920, border)
+    assert made[2][:4] == (-1920, border, border, 1080 - 2 * border)
+    assert made[3][:4] == (-border, border, border, 1080 - 2 * border)
+    assert made[4][:4] == (0, 0, 2560, border)
+    assert made[6][:4] == (0, border, border, 1440 - 2 * border)
+    assert made[7][:4] == (2560 - border, border, border, 1440 - 2 * border)
+    assert all(w <= border or h <= border for _, _, w, h, name in made if name != "cursor")
 
 
 def test_layer_failure_closes_prior_windows(monkeypatch):
