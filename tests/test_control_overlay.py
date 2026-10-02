@@ -36,9 +36,10 @@ def test_notice_uses_clear_english_and_transparent_corners():
     notice = control_overlay._notice_bitmap(1920)
     assert notice is not None
     width, height, bgra = notice
-    assert width < 1920 and height > 60
+    assert 540 <= width < 1920 and height >= 120  # Full-sized type on an ordinary monitor.
     assert len(bgra) == width * height * 4
     assert _alpha_at(bgra, width, 0, 0) == 0
+    assert _alpha_at(bgra, width, 10, height // 2) >= 240  # The panel stays clear on bright desktops.
     assert max(bgra[3::4]) == 255  # Text stays fully legible while the glow breathes.
     narrow = control_overlay._notice_bitmap(300)
     assert narrow is not None and narrow[0] <= 268

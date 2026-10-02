@@ -113,12 +113,14 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
     available_width = screen_width - 32
     if available_width < 200:
         return None
+    horizontal_padding = 32 if screen_width >= 640 else 20
     font_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
-    for hint_size in range(16, 7, -1):
+    # Prefer presentation-sized text, then shrink only when a monitor is narrow.
+    for hint_size in range(24, 7, -1):
         try:
-            title_font = ImageFont.truetype(str(font_dir / "seguisb.ttf"), hint_size + 5)
+            title_font = ImageFont.truetype(str(font_dir / "seguisb.ttf"), hint_size + 8)
             hint_font = ImageFont.truetype(str(font_dir / "segoeui.ttf"), hint_size)
-            note_font = ImageFont.truetype(str(font_dir / "segoeui.ttf"), max(8, hint_size - 2))
+            note_font = ImageFont.truetype(str(font_dir / "segoeui.ttf"), max(8, hint_size - 4))
         except OSError:
             title_font = hint_font = note_font = ImageFont.load_default()
         measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
@@ -128,25 +130,26 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
         title_width, title_height = title_box[2] - title_box[0], title_box[3] - title_box[1]
         hint_width, hint_height = hint_box[2] - hint_box[0], hint_box[3] - hint_box[1]
         note_width, note_height = note_box[2] - note_box[0], note_box[3] - note_box[1]
-        width = max(title_width, hint_width, note_width) + 36
+        width = max(title_width, hint_width, note_width) + 2 * horizontal_padding
         if width <= available_width:
             break
     else:
         return None
 
-    height = title_height + hint_height + note_height + 36
+    height = title_height + hint_height + note_height + 56
     image = Image.new("RGBA", (width, height))
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=14, fill=(8, 20, 38, 210))
-    title_y = 12 - title_box[1]
-    hint_y = 18 + title_height - hint_box[1]
-    note_y = 24 + title_height + hint_height - note_box[1]
+    # The opaque blue panel remains readable over light or busy desktop content.
+    draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=22, fill=(8, 42, 88, 245))
+    title_y = 18 - title_box[1]
+    hint_y = 28 + title_height - hint_box[1]
+    note_y = 38 + title_height + hint_height - note_box[1]
     draw.text(((width - title_width) // 2 - title_box[0], title_y), _NOTICE_TITLE,
               font=title_font, fill=(248, 251, 255, 255))
     draw.text(((width - hint_width) // 2 - hint_box[0], hint_y), _NOTICE_HINT,
-              font=hint_font, fill=(195, 220, 255, 255))
+              font=hint_font, fill=(225, 240, 255, 255))
     draw.text(((width - note_width) // 2 - note_box[0], note_y), _NOTICE_NOTE,
-              font=note_font, fill=(155, 188, 225, 255))
+              font=note_font, fill=(202, 225, 250, 255))
     return width, height, flash_overlay._premultiplied_bgra(image, 1.0)
 
 
